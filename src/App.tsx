@@ -1,5 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  ArrowLeft,
+  BarChart3,
+  BookOpen,
+  CheckCircle2,
+  ChevronRight,
+  Flame,
+  Home,
+  Import,
+  LibraryBig,
+  ListChecks,
+  Menu,
+  Play,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Target,
+  Trash2,
+  Trophy,
+  Volume2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import {
   buildAnswerFromWords,
   getAnswerWords,
@@ -8,7 +37,7 @@ import {
 } from "./answerRules";
 import "./App.css";
 
-type View = "dashboard" | "courses" | "import" | "study" | "stats";
+type View = "home" | "courses" | "courseDetail" | "study" | "stats";
 type SentenceStatus = "new" | "learning" | "mastered";
 type Rating = "again" | "hard" | "good" | "easy";
 type AnswerResult = "idle" | "correct" | "wrong";
@@ -98,24 +127,64 @@ interface TtsResponse {
   engine: string;
 }
 
-const DEFAULT_LESSON = "默认课时";
+interface CourseSummary {
+  course: CoursePack;
+  lessonCount: number;
+  totalSentences: number;
+  dueCount: number;
+  masteredCount: number;
+  progressPercent: number;
+  duplicateCount: number;
+  lastReviewedAt: string | null;
+}
 
-const views: Record<View, { title: string; subtitle: string }> = {
-  dashboard: { title: "首页", subtitle: "今日任务和学习进度" },
-  courses: { title: "课程包", subtitle: "管理课程、课时和句子" },
-  import: { title: "导入", subtitle: "一次导入一个课程包里的多节课" },
-  study: { title: "中译英", subtitle: "看中文，听英文，重打错误词" },
-  stats: { title: "统计", subtitle: "课程进度和掌握情况" },
+interface LessonSummary {
+  title: string;
+  index: number;
+  total: number;
+  mastered: number;
+  due: number;
+  progressPercent: number;
+}
+
+interface StudyQueueItem {
+  id: string;
+  lessonTitle: string;
+  english: string;
+  chinese: string;
+  status: SentenceStatus;
+  isCurrent: boolean;
+}
+
+interface StudyBookmark {
+  coursePackId: string;
+  sentenceId: string | null;
+  savedAt: string;
+}
+
+const DEFAULT_LESSON = "默认课时";
+const MANUAL_LESSON = "手动添加";
+const LAST_STUDY_KEY = "momolite:last-study";
+
+const viewCopy: Record<View, { title: string; subtitle: string }> = {
+  home: { title: "首页", subtitle: "今天继续一小步，英语句子更顺一点。" },
+  courses: { title: "课程包", subtitle: "整理你的句子材料和训练路径。" },
+  courseDetail: { title: "课程详情", subtitle: "课时、导入和继续学习都在这里。" },
+  study: { title: "中译英训练", subtitle: "看中文，听英文，补全原句。" },
+  stats: { title: "统计", subtitle: "查看课程进度和最近学习表现。" },
 };
 
-const ratingRules: Record<
-  Rating,
-  { label: string; minutes: number; status: SentenceStatus }
-> = {
-  again: { label: "不认识", minutes: 10, status: "learning" },
-  hard: { label: "模糊", minutes: 1440, status: "learning" },
-  good: { label: "认识", minutes: 4320, status: "learning" },
-  easy: { label: "熟悉", minutes: 10080, status: "mastered" },
+const navItems: Array<{ view: View; label: string; icon: LucideIcon }> = [
+  { view: "home", label: "首页", icon: Home },
+  { view: "courses", label: "课程包", icon: LibraryBig },
+  { view: "stats", label: "统计", icon: BarChart3 },
+];
+
+const ratingRules: Record<Rating, { minutes: number; status: SentenceStatus }> = {
+  again: { minutes: 10, status: "learning" },
+  hard: { minutes: 1440, status: "learning" },
+  good: { minutes: 4320, status: "mastered" },
+  easy: { minutes: 10080, status: "mastered" },
 };
 
 const initialState: AppState = {
@@ -126,14 +195,15 @@ const initialState: AppState = {
   stats: {},
 };
 
-const mainNavViews: View[] = ["dashboard", "courses", "stats"];
-
 function uid(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
 }
 
 function splitCsvLine(line: string) {
@@ -161,7 +231,7 @@ function isLessonHeading(line: string) {
   return (
     /^#{1,6}\s+/.test(normalized) ||
     /^\[.+\]$/.test(normalized) ||
-    /^第\s*\d+\s*[课天]/.test(normalized) ||
+    /^第\s*[\d一二三四五六七八九十百千万]+\s*[课天日]/.test(normalized) ||
     /^(lesson|story|day|unit|section)\s*\d*/i.test(normalized)
   );
 }
@@ -238,6 +308,10 @@ function parseImport(text: string): ImportRow[] {
   return rows;
 }
 
+function normalizeSentenceKey(english: string, chinese: string) {
+  return `${english.trim().replace(/\s+/g, " ").toLocaleLowerCase()}|||${chinese.trim()}`;
+}
+
 function getDueSentences(sentences: SentenceItem[], coursePackId?: string) {
   const now = Date.now();
   return sentences.filter((sentence) => {
@@ -258,12 +332,44 @@ function getStreakDays(stats: Record<string, DailyStats>) {
   let streak = 0;
   const cursor = new Date();
   for (const day of learnedDays) {
-    const expected = cursor.toISOString().slice(0, 10);
+    const expected = [
+      cursor.getFullYear(),
+      `${cursor.getMonth() + 1}`.padStart(2, "0"),
+      `${cursor.getDate()}`.padStart(2, "0"),
+    ].join("-");
     if (day !== expected) break;
     streak += 1;
     cursor.setDate(cursor.getDate() - 1);
   }
   return streak;
+}
+
+function formatShortDate(value: string | null) {
+  if (!value) return "还没有记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
+function statusLabel(status: SentenceStatus) {
+  if (status === "new") return "新句";
+  if (status === "learning") return "学习中";
+  return "已掌握";
+}
+
+function loadLastStudy(): StudyBookmark | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_STUDY_KEY);
+    return raw ? (JSON.parse(raw) as StudyBookmark) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastStudy(bookmark: StudyBookmark) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LAST_STUDY_KEY, JSON.stringify(bookmark));
 }
 
 function getPreferredEnglishVoice() {
@@ -307,9 +413,83 @@ function speakWithSystemVoice(text: string) {
   window.speechSynthesis.speak(utterance);
 }
 
+function buildCourseSummaries(
+  coursePacks: CoursePack[],
+  sentences: SentenceItem[],
+  reviews: ReviewLog[],
+): CourseSummary[] {
+  const nameCounts = coursePacks.reduce<Record<string, number>>((counts, course) => {
+    const key = course.name.trim().toLocaleLowerCase();
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
+
+  return coursePacks.map((course) => {
+    const courseSentences = sentences.filter(
+      (sentence) => sentence.coursePackId === course.id,
+    );
+    const lessonCount = new Set(
+      courseSentences.map((sentence) => sentence.lessonTitle),
+    ).size;
+    const dueCount = getDueSentences(courseSentences).length;
+    const masteredCount = courseSentences.filter(
+      (sentence) => sentence.status === "mastered",
+    ).length;
+    const progressPercent = courseSentences.length
+      ? Math.round((masteredCount / courseSentences.length) * 100)
+      : 0;
+    const sentenceIds = new Set(courseSentences.map((sentence) => sentence.id));
+    const reviewedAtValues = reviews
+      .filter((review) => sentenceIds.has(review.sentenceId))
+      .map((review) => review.reviewedAt)
+      .sort();
+    const lastReviewedAt =
+      reviewedAtValues.length > 0
+        ? reviewedAtValues[reviewedAtValues.length - 1]
+        : null;
+    const duplicateCount = nameCounts[course.name.trim().toLocaleLowerCase()] ?? 1;
+
+    return {
+      course,
+      lessonCount,
+      totalSentences: courseSentences.length,
+      dueCount,
+      masteredCount,
+      progressPercent,
+      duplicateCount,
+      lastReviewedAt,
+    };
+  });
+}
+
+function buildLessonSummaries(sentences: SentenceItem[]): LessonSummary[] {
+  const titles = [...new Set(sentences.map((sentence) => sentence.lessonTitle))];
+  return titles.map((title, index) => {
+    const lessonSentences = sentences.filter(
+      (sentence) => sentence.lessonTitle === title,
+    );
+    const mastered = lessonSentences.filter(
+      (sentence) => sentence.status === "mastered",
+    ).length;
+    const due = getDueSentences(lessonSentences).length;
+    const progressPercent = lessonSentences.length
+      ? Math.round((mastered / lessonSentences.length) * 100)
+      : 0;
+
+    return {
+      title,
+      index: index + 1,
+      total: lessonSentences.length,
+      mastered,
+      due,
+      progressPercent,
+    };
+  });
+}
+
 function App() {
   const [state, setState] = useState<AppState>(initialState);
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>("home");
   const [courseName, setCourseName] = useState("");
   const [sentenceDraft, setSentenceDraft] = useState({
     english: "",
@@ -318,51 +498,41 @@ function App() {
     note: "",
   });
   const [importText, setImportText] = useState("");
+  const [importMessage, setImportMessage] = useState(
+    "粘贴课程文本后，会在下方预览课时和句子。",
+  );
+  const [showImport, setShowImport] = useState(false);
   const [sessionIndex, setSessionIndex] = useState(0);
   const [showingAnswer, setShowingAnswer] = useState(false);
   const [answerWords, setAnswerWords] = useState<Record<number, string>>({});
   const [answerResult, setAnswerResult] = useState<AnswerResult>("idle");
   const [wrongIndexes, setWrongIndexes] = useState<Set<number>>(new Set());
   const [lastSubmittedAnswer, setLastSubmittedAnswer] = useState("");
-  const [importMessage, setImportMessage] = useState(
-    "推荐格式：## 第1课 标题，然后每行写 英文=中文。也兼容 英文=中文=音标。",
-  );
   const [databasePath, setDatabasePath] = useState("");
   const [databaseError, setDatabaseError] = useState("");
   const [databaseHydrated, setDatabaseHydrated] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(true);
   const [ttsStatus, setTtsStatus] = useState("");
+  const [lastStudy, setLastStudy] = useState<StudyBookmark | null>(() =>
+    loadLastStudy(),
+  );
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
-
     window.speechSynthesis.getVoices();
   }, []);
 
-  async function speakEnglish(text: string) {
-    if (!text) return;
-
-    try {
-      setTtsStatus("Piper 离线发音");
-      const response = await invoke<TtsResponse>("synthesize_piper_tts", {
-        request: { input: text },
-      });
-      const audio = new Audio(`data:audio/wav;base64,${response.audioBase64}`);
-      await audio.play();
-      setTtsStatus(response.cached ? "Piper 离线发音（缓存）" : response.engine);
-    } catch (error) {
-      setTtsStatus("Piper 发音失败，已回退本机语音");
-      speakWithSystemVoice(text);
-      console.warn(error);
-    }
-  }
-
   function applyLoadedState(loadedState: AppState) {
-    if (loadedState.coursePacks.length > 0) {
-      setState(loadedState);
-    }
+    setState((current) => ({
+      ...loadedState,
+      activeCoursePackId:
+        lastStudy?.coursePackId ||
+        loadedState.activeCoursePackId ||
+        loadedState.coursePacks[0]?.id ||
+        current.activeCoursePackId,
+    }));
     setDatabaseHydrated(true);
   }
 
@@ -382,11 +552,24 @@ function App() {
       });
   }, []);
 
+  const courseSummaries = useMemo(
+    () => buildCourseSummaries(state.coursePacks, state.sentences, state.reviews),
+    [state.coursePacks, state.reviews, state.sentences],
+  );
+
   const activeCourse = useMemo(
     () =>
       state.coursePacks.find((course) => course.id === state.activeCoursePackId) ??
       state.coursePacks[0],
     [state.activeCoursePackId, state.coursePacks],
+  );
+
+  const activeSummary = useMemo(
+    () =>
+      activeCourse
+        ? courseSummaries.find((summary) => summary.course.id === activeCourse.id)
+        : undefined,
+    [activeCourse, courseSummaries],
   );
 
   const activeSentences = useMemo(
@@ -397,6 +580,11 @@ function App() {
           )
         : [],
     [activeCourse, state.sentences],
+  );
+
+  const lessonSummaries = useMemo(
+    () => buildLessonSummaries(activeSentences),
+    [activeSentences],
   );
 
   const session = useMemo(
@@ -412,16 +600,78 @@ function App() {
     reviewCount: 0,
     studyMinutes: 0,
   };
+  const dueCount = getDueSentences(state.sentences).length;
   const activeDueCount = activeCourse
     ? getDueSentences(state.sentences, activeCourse.id).length
     : 0;
+  const streakDays = getStreakDays(state.stats);
   const importRows = useMemo(() => parseImport(importText), [importText]);
+  const todayTarget = activeCourse?.dailyNewTarget || 20;
+  const todayPercent = Math.min(
+    100,
+    Math.round((todayStats.reviewCount / Math.max(1, todayTarget)) * 100),
+  );
+  const nextCourse =
+    courseSummaries.find((summary) => summary.course.id === lastStudy?.coursePackId) ??
+    courseSummaries.find((summary) => summary.dueCount > 0) ??
+    courseSummaries[0];
+
+  const importPreview = useMemo(() => {
+    const existingKeys = new Set(
+      activeSentences.map((sentence) =>
+        normalizeSentenceKey(sentence.english, sentence.chinese),
+      ),
+    );
+    const seenKeys = new Set<string>();
+    let duplicateCount = 0;
+    let newCount = 0;
+
+    for (const row of importRows) {
+      const key = normalizeSentenceKey(row.english, row.chinese);
+      if (existingKeys.has(key) || seenKeys.has(key)) {
+        duplicateCount += 1;
+      } else {
+        seenKeys.add(key);
+        newCount += 1;
+      }
+    }
+
+    return {
+      duplicateCount,
+      newCount,
+      lessonCount: new Set(importRows.map((row) => row.lessonTitle)).size,
+    };
+  }, [activeSentences, importRows]);
+
+  const studyQueue = useMemo<StudyQueueItem[]>(
+    () =>
+      session.map((sentence) => ({
+        id: sentence.id,
+        lessonTitle: sentence.lessonTitle,
+        english: sentence.english,
+        chinese: sentence.chinese,
+        status: sentence.status,
+        isCurrent: sentence.id === currentSentence?.id,
+      })),
+    [currentSentence?.id, session],
+  );
 
   useEffect(() => {
     if (view === "study" && currentSentence) {
       speakEnglish(currentSentence.english);
     }
   }, [currentSentence?.id, view]);
+
+  useEffect(() => {
+    if (view !== "study" || !activeCourse || !currentSentence) return;
+    const bookmark: StudyBookmark = {
+      coursePackId: activeCourse.id,
+      sentenceId: currentSentence.id,
+      savedAt: new Date().toISOString(),
+    };
+    saveLastStudy(bookmark);
+    setLastStudy(bookmark);
+  }, [activeCourse, currentSentence, view]);
 
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent) {
@@ -441,6 +691,24 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [currentSentence, view]);
+
+  async function speakEnglish(text: string) {
+    if (!text) return;
+
+    try {
+      setTtsStatus("Piper 离线朗读");
+      const response = await invoke<TtsResponse>("synthesize_piper_tts", {
+        request: { input: text },
+      });
+      const audio = new Audio(`data:audio/wav;base64,${response.audioBase64}`);
+      await audio.play();
+      setTtsStatus(response.cached ? "Piper 离线朗读（缓存）" : response.engine);
+    } catch (error) {
+      setTtsStatus("Piper 暂不可用，已切换本机语音");
+      speakWithSystemVoice(text);
+      console.warn(error);
+    }
+  }
 
   function updateState(updater: (current: AppState) => AppState) {
     setState((current) => updater(current));
@@ -468,10 +736,32 @@ function App() {
 
   function openView(next: View) {
     setView(next);
-    if (next === "study") {
-      setSessionIndex(0);
-      resetAnswerState();
+    if (next !== "study") {
+      setQueueCollapsed(true);
     }
+  }
+
+  function openCourse(coursePackId: string) {
+    updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
+    setShowImport(false);
+    openView("courseDetail");
+  }
+
+  function openStudy(coursePackId = activeCourse?.id, preferredSentenceId?: string | null) {
+    if (!coursePackId) return;
+    const courseSession = getDueSentences(state.sentences, coursePackId).slice(0, 20);
+    const bookmarkSentenceId =
+      preferredSentenceId ??
+      (lastStudy?.coursePackId === coursePackId ? lastStudy.sentenceId : null);
+    const foundIndex = courseSession.findIndex(
+      (sentence) => sentence.id === bookmarkSentenceId,
+    );
+
+    updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
+    setSessionIndex(foundIndex >= 0 ? foundIndex : 0);
+    resetAnswerState();
+    setQueueCollapsed(true);
+    setView("study");
   }
 
   async function persistCoursePack(coursePack: CoursePack) {
@@ -490,7 +780,6 @@ function App() {
 
   async function persistLesson(lesson: NewLesson) {
     if (!databasePath || !databaseHydrated) return;
-
     await invoke("create_lesson", { lesson });
   }
 
@@ -510,10 +799,45 @@ function App() {
     });
   }
 
+  async function loadLessons(coursePackId: string) {
+    if (!databasePath || !databaseHydrated) return [] as NewLesson[];
+    return invoke<NewLesson[]>("list_lessons", { coursePackId });
+  }
+
+  async function ensureLessonId(
+    coursePackId: string,
+    title: string,
+    createdAt: string,
+  ) {
+    const lessons = await loadLessons(coursePackId);
+    const existing = lessons.find((lesson) => lesson.title === title);
+    if (existing) return existing.id;
+
+    const lesson: NewLesson = {
+      id: uid("lesson"),
+      coursePackId,
+      title,
+      sortOrder: lessons.length,
+      createdAt,
+    };
+    await persistLesson(lesson);
+    return lesson.id;
+  }
+
   async function createCourse(event: FormEvent) {
     event.preventDefault();
     const name = courseName.trim();
     if (!name) return;
+
+    const hasDuplicate = state.coursePacks.some(
+      (course) => course.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase(),
+    );
+    if (
+      hasDuplicate &&
+      !window.confirm(`已经有名为「${name}」的课程包，仍然创建一个新的？`)
+    ) {
+      return;
+    }
 
     const coursePack: CoursePack = {
       id: uid("course"),
@@ -537,9 +861,16 @@ function App() {
       coursePacks: [coursePack, ...current.coursePacks],
     }));
     setCourseName("");
+    setShowImport(true);
+    setView("courseDetail");
   }
 
   async function deleteCourse(coursePackId: string) {
+    const course = state.coursePacks.find((item) => item.id === coursePackId);
+    if (!window.confirm(`删除「${course?.name ?? "这个课程"}」及其所有句子？`)) {
+      return;
+    }
+
     if (databasePath && databaseHydrated) {
       try {
         await invoke("delete_course_pack", { coursePackId });
@@ -552,7 +883,7 @@ function App() {
 
     updateState((current) => {
       const coursePacks = current.coursePacks.filter(
-        (course) => course.id !== coursePackId,
+        (item) => item.id !== coursePackId,
       );
       return {
         ...current,
@@ -566,9 +897,14 @@ function App() {
         ),
       };
     });
+    if (activeCourse?.id === coursePackId) {
+      setView("courses");
+    }
   }
 
   async function deleteSentence(sentenceId: string) {
+    if (!window.confirm("删除这条句子？")) return;
+
     if (databasePath && databaseHydrated) {
       try {
         await invoke("delete_sentence", { sentenceId });
@@ -598,18 +934,20 @@ function App() {
       return;
     }
 
+    const key = normalizeSentenceKey(sentenceDraft.english, sentenceDraft.chinese);
+    const duplicate = activeSentences.some(
+      (sentence) => normalizeSentenceKey(sentence.english, sentence.chinese) === key,
+    );
+    if (duplicate && !window.confirm("当前课程里已有相同句子，仍然添加？")) {
+      return;
+    }
+
     const createdAt = new Date().toISOString();
-    const lesson: NewLesson = {
-      id: `lesson_${activeCourse.id}_default`,
-      coursePackId: activeCourse.id,
-      title: DEFAULT_LESSON,
-      sortOrder: 0,
-      createdAt,
-    };
+    const lessonId = await ensureLessonId(activeCourse.id, MANUAL_LESSON, createdAt);
     const sentence: SentenceItem = {
       id: uid("sentence"),
       coursePackId: activeCourse.id,
-      lessonTitle: DEFAULT_LESSON,
+      lessonTitle: MANUAL_LESSON,
       english: sentenceDraft.english.trim(),
       chinese: sentenceDraft.chinese.trim(),
       phonetic: sentenceDraft.phonetic.trim(),
@@ -624,9 +962,7 @@ function App() {
     };
 
     try {
-      await persistCoursePack(activeCourse);
-      await persistLesson(lesson);
-      await persistSentence(sentence, lesson.id);
+      await persistSentence(sentence, lessonId);
       setDatabaseError("");
     } catch (error) {
       setDatabaseError(String(error));
@@ -643,19 +979,138 @@ function App() {
   async function importSentences() {
     if (!activeCourse || !importRows.length) return;
 
+    const existingKeys = new Set(
+      activeSentences.map((sentence) =>
+        normalizeSentenceKey(sentence.english, sentence.chinese),
+      ),
+    );
+    const seenKeys = new Set<string>();
+    const rows: ImportRow[] = [];
+    let skipped = 0;
+
+    for (const row of importRows) {
+      const key = normalizeSentenceKey(row.english, row.chinese);
+      if (existingKeys.has(key) || seenKeys.has(key)) {
+        skipped += 1;
+      } else {
+        seenKeys.add(key);
+        rows.push(row);
+      }
+    }
+
+    if (!rows.length) {
+      setImportMessage(`没有新增句子，已跳过 ${skipped} 条重复内容。`);
+      return;
+    }
+
     const now = new Date().toISOString();
-    const lessonTitles = [...new Set(importRows.map((row) => row.lessonTitle))];
+    const lessonMap = new Map<string, string>();
+
+    try {
+      await persistCoursePack(activeCourse);
+      const existingLessons = await loadLessons(activeCourse.id);
+      existingLessons.forEach((lesson) => lessonMap.set(lesson.title, lesson.id));
+
+      const lessonTitles = [...new Set(rows.map((row) => row.lessonTitle))];
+      let createdLessonCount = 0;
+      for (const title of lessonTitles) {
+        if (lessonMap.has(title)) continue;
+        const lesson: NewLesson = {
+          id: uid("lesson"),
+          coursePackId: activeCourse.id,
+          title,
+          sortOrder: existingLessons.length + createdLessonCount,
+          createdAt: now,
+        };
+        await persistLesson(lesson);
+        lessonMap.set(title, lesson.id);
+        createdLessonCount += 1;
+      }
+
+      const sentences = rows.map<SentenceItem>((row) => ({
+        id: uid("sentence"),
+        coursePackId: activeCourse.id,
+        lessonTitle: row.lessonTitle,
+        english: row.english,
+        chinese: row.chinese,
+        phonetic: row.phonetic,
+        note: row.note,
+        status: "new",
+        favorite: false,
+        showCount: 0,
+        reviewCount: 0,
+        errorCount: 0,
+        nextReviewAt: null,
+        createdAt: now,
+      }));
+
+      for (const sentence of sentences) {
+        const lessonId = lessonMap.get(sentence.lessonTitle);
+        if (!lessonId) {
+          throw new Error(`找不到课时：${sentence.lessonTitle}`);
+        }
+        await persistSentence(sentence, lessonId);
+      }
+
+      updateState((current) => ({
+        ...current,
+        sentences: [...current.sentences, ...sentences],
+      }));
+      setImportText("");
+      setImportMessage(
+        `已导入 ${sentences.length} 句，跳过 ${skipped} 条重复内容，识别 ${lessonTitles.length} 个课时。`,
+      );
+      setDatabaseError("");
+    } catch (error) {
+      setDatabaseError(String(error));
+      setImportMessage(`导入失败：${String(error)}`);
+    }
+  }
+
+  async function seedDemo() {
+    const coursePack: CoursePack = {
+      id: uid("course"),
+      name: "经济讨论句子课",
+      language: "en",
+      dailyNewTarget: 20,
+      createdAt: new Date().toISOString(),
+    };
+    const rows: ImportRow[] = [
+      {
+        lessonTitle: "第1课：经济讨论",
+        english: "The market is showing strong growth this quarter.",
+        chinese: "市场这个季度展现出强劲的增长。",
+        phonetic: "",
+        note: "",
+      },
+      {
+        lessonTitle: "第1课：经济讨论",
+        english: "Yeah, the economy is developing faster than most people expect.",
+        chinese: "是的，经济发展比大多数人预期的要快。",
+        phonetic: "",
+        note: "",
+      },
+      {
+        lessonTitle: "第2课：经济观点",
+        english: "What's your view on the current economic situation?",
+        chinese: "你对当前的经济形势有什么看法？",
+        phonetic: "",
+        note: "",
+      },
+    ];
+    const now = new Date().toISOString();
+    const lessonTitles = [...new Set(rows.map((row) => row.lessonTitle))];
     const lessons = lessonTitles.map<NewLesson>((title, index) => ({
       id: uid("lesson"),
-      coursePackId: activeCourse.id,
+      coursePackId: coursePack.id,
       title,
       sortOrder: index,
       createdAt: now,
     }));
     const lessonIds = new Map(lessons.map((lesson) => [lesson.title, lesson.id]));
-    const sentences = importRows.map<SentenceItem>((row) => ({
+    const sentences = rows.map<SentenceItem>((row) => ({
       id: uid("sentence"),
-      coursePackId: activeCourse.id,
+      coursePackId: coursePack.id,
       lessonTitle: row.lessonTitle,
       english: row.english,
       chinese: row.chinese,
@@ -671,117 +1126,10 @@ function App() {
     }));
 
     try {
-      await persistCoursePack(activeCourse);
-      for (const lesson of lessons) {
-        await persistLesson(lesson);
-      }
-      for (const sentence of sentences) {
-        await persistSentence(
-          sentence,
-          lessonIds.get(sentence.lessonTitle) ?? lessons[0]?.id ?? "",
-        );
-      }
-      setDatabaseError("");
-    } catch (error) {
-      setDatabaseError(String(error));
-      setImportMessage(`导入失败：${String(error)}`);
-      return;
-    }
-
-    updateState((current) => ({
-      ...current,
-      sentences: [...current.sentences, ...sentences],
-    }));
-    setImportText("");
-    setImportMessage(`已导入 ${sentences.length} 句，识别到 ${new Set(sentences.map((item) => item.lessonTitle)).size} 个课时`);
-  }
-
-  async function seedDemo() {
-    const coursePack: CoursePack = {
-      id: uid("course"),
-      name: "经济讨论句子课",
-      language: "en",
-      dailyNewTarget: 20,
-      createdAt: new Date().toISOString(),
-    };
-    const rows = [
-      [
-        "第1课：经济讨论",
-        "The market is showing strong growth this quarter.",
-        "市场这个季度展现出强劲的增长。",
-        "[ˈmɑːrkɪt]",
-      ],
-      [
-        "第1课：经济讨论",
-        "Yeah, the economy is developing faster than most people expect.",
-        "是的，经济发展比大多数人预期的要快。",
-        "[ˌiːˈkɑːnəmi]",
-      ],
-      [
-        "第2课：经济观点",
-        "What's your view on the current economic situation?",
-        "你对当前的经济形势有什么看法？",
-        "[vjuː]",
-      ],
-      [
-        "第2课：经济观点",
-        "The interest rate is the major factor affecting business growth.",
-        "利率是影响业务增长的主要因素。",
-        "[ˈɪntrəst]",
-      ],
-      [
-        "第3课：金融行业",
-        "Financial industry professionals say profit margins are improving.",
-        "金融行业专业人士表示利润率正在改善。",
-        "[faɪˈnænʃl]",
-      ],
-      [
-        "第3课：金融行业",
-        "But the cost of operation is still very high.",
-        "但运营成本仍然很高。",
-        "[kɔːst]",
-      ],
-    ];
-
-    const createdAt = new Date().toISOString();
-    const lessonTitles = [...new Set(rows.map(([lessonTitle]) => lessonTitle))];
-    const lessons = lessonTitles.map<NewLesson>((title, index) => ({
-      id: uid("lesson"),
-      coursePackId: coursePack.id,
-      title,
-      sortOrder: index,
-      createdAt,
-    }));
-    const lessonIds = new Map(lessons.map((lesson) => [lesson.title, lesson.id]));
-    const sentences = rows.map<SentenceItem>(
-      ([lessonTitle, english, chinese, phonetic]) => ({
-        id: uid("sentence"),
-        coursePackId: coursePack.id,
-        lessonTitle,
-        english,
-        chinese,
-        phonetic,
-        note: "",
-        status: "new",
-        favorite: false,
-        showCount: 0,
-        reviewCount: 0,
-        errorCount: 0,
-        nextReviewAt: null,
-        createdAt,
-      }),
-    );
-
-    try {
       await persistCoursePack(coursePack);
-      for (const lesson of lessons) {
-        await persistLesson(lesson);
-      }
+      for (const lesson of lessons) await persistLesson(lesson);
       for (const sentence of sentences) {
-        await persistSentence(
-          sentence,
-          lessonIds.get(sentence.lessonTitle) ?? lessons[0]?.id ?? "",
-        );
+        await persistSentence(sentence, lessonIds.get(sentence.lessonTitle) ?? "");
       }
       setDatabaseError("");
     } catch (error) {
@@ -795,8 +1143,7 @@ function App() {
       coursePacks: [coursePack, ...current.coursePacks],
       sentences: [...current.sentences, ...sentences],
     }));
-    setSessionIndex(0);
-    resetAnswerState();
+    setView("courseDetail");
   }
 
   function evaluateAnswer() {
@@ -863,7 +1210,7 @@ function App() {
           [todayKey()]: {
             ...today,
             newCount: today.newCount + (wasNew ? 1 : 0),
-            reviewCount: today.reviewCount + (wasNew ? 0 : 1),
+            reviewCount: today.reviewCount + 1,
           },
         },
         reviews: [
@@ -894,12 +1241,12 @@ function App() {
       });
     }
 
-    setSessionIndex((index) => Math.min(index + 1, session.length - 1));
+    setSessionIndex((index) => Math.max(0, Math.min(index, session.length - 2)));
     resetAnswerState();
   }
 
   function handleAnswerKeyDown(
-    event: KeyboardEvent<HTMLInputElement>,
+    event: ReactKeyboardEvent<HTMLInputElement>,
     wordIndex: number,
   ) {
     if (event.key === " ") {
@@ -925,362 +1272,482 @@ function App() {
     nextInput?.focus();
   }
 
-  const dueCount = getDueSentences(state.sentences).length;
-  const streakDays = getStreakDays(state.stats);
-  const lessons = new Set(activeSentences.map((sentence) => sentence.lessonTitle));
-  const lessonSummaries = [...lessons].map((title, index) => {
-    const lessonSentences = activeSentences.filter(
-      (sentence) => sentence.lessonTitle === title,
-    );
-    const mastered = lessonSentences.filter(
-      (sentence) => sentence.status === "mastered",
-    ).length;
-    return {
-      title,
-      index: index + 1,
-      total: lessonSentences.length,
-      mastered,
-      due: lessonSentences.filter((sentence) =>
-        getDueSentences([sentence]).length > 0,
-      ).length,
-    };
-  });
-
   return (
     <div className={`app-shell ${view === "study" ? "study-mode" : ""}`}>
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">M</div>
-          <div>
-            <div className="brand-title">MomoLite</div>
-            <div className="brand-subtitle">Local Study Lab</div>
+      {view !== "study" && (
+        <aside className="sidebar">
+          <div className="brand">
+            <div className="brand-mark">M</div>
+            <div>
+              <div className="brand-title">MomoLite</div>
+              <div className="brand-subtitle">Sentence trainer</div>
+            </div>
           </div>
-        </div>
-        <nav className="nav">
-          {mainNavViews.map((item) => (
-            <button
-              className={`nav-item ${view === item ? "active" : ""}`}
-              key={item}
-              onClick={() => openView(item)}
-              type="button"
-            >
-              {views[item].title}
-            </button>
-          ))}
-        </nav>
-      </aside>
+          <nav className="nav">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  className={`nav-item ${view === item.view ? "active" : ""}`}
+                  key={item.view}
+                  onClick={() => openView(item.view)}
+                  type="button"
+                >
+                  <Icon size={18} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="side-note">
+            <Sparkles size={16} />
+            <span>本地 SQLite + 离线朗读</span>
+          </div>
+        </aside>
+      )}
 
       <main className="workspace">
-        <header className="topbar">
-          <div>
-            <h1>{views[view].title}</h1>
-            <p>{views[view].subtitle}</p>
-            <p className="database-status">
-              {databasePath
-                ? `SQLite 已就绪：${databasePath}`
-                : databaseError
-                  ? `SQLite 初始化失败：${databaseError}`
-                  : "SQLite 正在初始化..."}
-            </p>
-          </div>
-          <div className="topbar-actions">
-            <select
-              aria-label="选择课程包"
-              onChange={(event) => {
-                updateState((current) => ({
-                  ...current,
-                  activeCoursePackId: event.target.value,
-                }));
-                setSessionIndex(0);
-                resetAnswerState();
-              }}
-              value={activeCourse?.id ?? ""}
-            >
-              {state.coursePacks.map((course) => (
-                <option key={course.id} value={course.id}>
-                  {course.name}
-                </option>
-              ))}
-            </select>
-            <button
-              className="ghost-button"
-              onClick={() => openView("import")}
-              type="button"
-            >
-              ????
-            </button>
-            {!state.coursePacks.length && (
-              <button className="ghost-button" onClick={seedDemo} type="button">
-                ????
-              </button>
-            )}
-          </div>
-        </header>
-
-        {view === "dashboard" && (
-          <section>
-            <div className="metric-grid">
-              <Metric label="今日新学" value={todayStats.newCount} />
-              <Metric label="今日复习" value={todayStats.reviewCount} />
-              <Metric label="待复习" value={dueCount} />
-              <Metric label="连续天数" value={streakDays} accent />
+        {view !== "study" && (
+          <header className="topbar">
+            <div>
+              <h1>{viewCopy[view].title}</h1>
+              <p>{viewCopy[view].subtitle}</p>
             </div>
-            <div className="dashboard-layout">
-              <Panel
-                action={
+            <div className="topbar-actions">
+              {activeCourse && (
+                <button
+                  className="ghost-button"
+                  onClick={() => openCourse(activeCourse.id)}
+                  type="button"
+                >
+                  <BookOpen size={17} />
+                  {activeCourse.name}
+                </button>
+              )}
+              <button
+                className="primary-button"
+                disabled={!activeCourse || activeDueCount === 0}
+                onClick={() => openStudy(activeCourse?.id)}
+                type="button"
+              >
+                <Play size={17} />
+                继续学习
+              </button>
+            </div>
+          </header>
+        )}
+
+        {databaseError && (
+          <div className="notice danger-notice">
+            SQLite 连接异常：{databaseError}
+          </div>
+        )}
+
+        {!databaseHydrated && (
+          <div className="notice">
+            <RefreshCw size={16} />
+            正在载入本地学习数据
+          </div>
+        )}
+
+        {view === "home" && (
+          <section className="home-page">
+            <section className="home-hero">
+              <div className="hero-copy">
+                <div className="eyebrow">
+                  <Sparkles size={16} />
+                  今日训练
+                </div>
+                <h2>把中文提示变成自然英文。</h2>
+                <p>
+                  {nextCourse
+                    ? `下一组：${nextCourse.course.name}`
+                    : "先创建一个课程包，再导入你的句子材料。"}
+                </p>
+                <div className="hero-actions">
                   <button
-                    className="primary-button"
-                    onClick={() => openView("study")}
+                    className="primary-button large"
+                    disabled={!nextCourse || nextCourse.dueCount === 0}
+                    onClick={() => openStudy(nextCourse?.course.id)}
                     type="button"
                   >
-                    开始学习
+                    <Play size={18} />
+                    开始训练
                   </button>
-                }
-                title="今日队列"
-              >
-                <QueueList
-                  sentences={getDueSentences(state.sentences, activeCourse?.id).slice(0, 8)}
-                />
-              </Panel>
-              <Panel
+                  <button
+                    className="ghost-button large"
+                    onClick={() =>
+                      nextCourse ? openCourse(nextCourse.course.id) : openView("courses")
+                    }
+                    type="button"
+                  >
+                    <LibraryBig size={18} />
+                    {nextCourse ? "查看课程" : "创建课程"}
+                  </button>
+                </div>
+              </div>
+              <div className="goal-card">
+                <div
+                  className="goal-ring"
+                  style={{ "--progress": `${todayPercent}%` } as React.CSSProperties}
+                >
+                  <span>{todayPercent}%</span>
+                </div>
+                <div>
+                  <strong>今日目标</strong>
+                  <span>
+                    {todayStats.reviewCount}/{todayTarget} 句
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <div className="metric-grid">
+              <Metric icon={Target} label="今日完成" value={todayStats.reviewCount} />
+              <Metric icon={ListChecks} label="待学习" value={dueCount} />
+              <Metric icon={Flame} label="连续天数" value={streakDays} accent />
+              <Metric icon={Trophy} label="已掌握" value={activeSummary?.masteredCount ?? 0} />
+            </div>
+
+            <section className="dashboard-grid">
+              <Surface
                 action={
                   <button
-                    className="ghost-button"
+                    className="small-action"
                     onClick={() => openView("courses")}
                     type="button"
                   >
-                    管理
+                    全部课程
+                    <ChevronRight size={16} />
                   </button>
                 }
-                title="最近课程包"
+                title="最近课程"
               >
-                <CourseList
-                  activeCoursePackId={activeCourse?.id}
-                  coursePacks={state.coursePacks.slice(0, 5)}
-                  onDelete={deleteCourse}
-                  onSelect={(coursePackId) =>
-                    updateState((current) => ({
-                      ...current,
-                      activeCoursePackId: coursePackId,
-                    }))
-                  }
-                  sentences={state.sentences}
-                />
-              </Panel>
-            </div>
+                <div className="course-card-list">
+                  {courseSummaries.length ? (
+                    courseSummaries.slice(0, 4).map((summary) => (
+                      <CourseCard
+                        key={summary.course.id}
+                        onDelete={deleteCourse}
+                        onOpen={openCourse}
+                        onStudy={openStudy}
+                        summary={summary}
+                      />
+                    ))
+                  ) : (
+                    <EmptyState
+                      actionLabel="创建第一门课程"
+                      icon={LibraryBig}
+                      onAction={() => openView("courses")}
+                      title="还没有课程包"
+                    />
+                  )}
+                </div>
+              </Surface>
+
+              <Surface title="继续学习">
+                {nextCourse ? (
+                  <div className="continue-card">
+                    <div className="badge-row">
+                      <span className="soft-badge">
+                        {nextCourse.lessonCount} 课时
+                      </span>
+                      <span className="soft-badge accent">
+                        {nextCourse.dueCount} 句待学
+                      </span>
+                    </div>
+                    <h3>{nextCourse.course.name}</h3>
+                    <ProgressBar value={nextCourse.progressPercent} />
+                    <div className="continue-footer">
+                      <span>上次：{formatShortDate(nextCourse.lastReviewedAt)}</span>
+                      <button
+                        className="primary-button"
+                        disabled={nextCourse.dueCount === 0}
+                        onClick={() => openStudy(nextCourse.course.id)}
+                        type="button"
+                      >
+                        <Play size={16} />
+                        继续
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState
+                    actionLabel="去课程包"
+                    icon={BookOpen}
+                    onAction={() => openView("courses")}
+                    title="还没有可学习内容"
+                  />
+                )}
+              </Surface>
+            </section>
           </section>
         )}
 
         {view === "courses" && (
-          <section className="split-layout">
-            <Panel title="课程包">
-              <form className="inline-form" onSubmit={createCourse}>
+          <section className="courses-page">
+            <Surface title="新建课程包">
+              <form className="create-course-form" onSubmit={createCourse}>
                 <input
                   onChange={(event) => setCourseName(event.target.value)}
-                  placeholder="新课程包名称"
+                  placeholder="例如：商务英语 30 天"
                   value={courseName}
                 />
                 <button className="primary-button" type="submit">
+                  <Plus size={17} />
                   新建
                 </button>
               </form>
-              <CourseList
-                activeCoursePackId={activeCourse?.id}
-                coursePacks={state.coursePacks}
-                onDelete={deleteCourse}
-                onSelect={(coursePackId) =>
-                  updateState((current) => ({
-                    ...current,
-                    activeCoursePackId: coursePackId,
-                  }))
-                }
-                sentences={state.sentences}
-              />
-            </Panel>
-            <Panel
-              action={
-                <span className="muted">
-                  {activeSentences.length} 句 · {lessons.size} 课
-                </span>
-              }
-              title="句子"
-            >
-              <div className="course-hero">
-                <div>
-                  <div className="row-title">
-                    {activeCourse?.name ?? "请先创建课程"}
-                  </div>
-                  <div className="row-subtitle">
-                    {lessonSummaries.length} 课 · {activeSentences.length} 句 · 自动保存
-                  </div>
-                </div>
-                <button
-                  className="primary-button"
-                  onClick={() => openView("import")}
-                  type="button"
-                >
-                  批量导入
-                </button>
-              </div>
-              <LessonGrid lessons={lessonSummaries} />
-              <form className="word-form" onSubmit={addSentence}>
-                <input
-                  onChange={(event) =>
-                    setSentenceDraft({
-                      ...sentenceDraft,
-                      english: event.target.value,
-                    })
-                  }
-                  placeholder="英文句子"
-                  value={sentenceDraft.english}
+            </Surface>
+
+            <div className="course-grid">
+              {courseSummaries.length ? (
+                courseSummaries.map((summary) => (
+                  <CourseCard
+                    key={summary.course.id}
+                    onDelete={deleteCourse}
+                    onOpen={openCourse}
+                    onStudy={openStudy}
+                    summary={summary}
+                  />
+                ))
+              ) : (
+                <EmptyState
+                  actionLabel="生成示例课程"
+                  icon={Sparkles}
+                  onAction={seedDemo}
+                  title="从一门课程开始"
                 />
-                <input
-                  onChange={(event) =>
-                    setSentenceDraft({
-                      ...sentenceDraft,
-                      chinese: event.target.value,
-                    })
-                  }
-                  placeholder="中文意思"
-                  value={sentenceDraft.chinese}
-                />
-                <input
-                  onChange={(event) =>
-                    setSentenceDraft({
-                      ...sentenceDraft,
-                      phonetic: event.target.value,
-                    })
-                  }
-                  placeholder="重点音标，可不填"
-                  value={sentenceDraft.phonetic}
-                />
-                <input
-                  onChange={(event) =>
-                    setSentenceDraft({ ...sentenceDraft, note: event.target.value })
-                  }
-                  placeholder="备注"
-                  value={sentenceDraft.note}
-                />
-                <button className="primary-button" type="submit">
-                  添加句子
-                </button>
-              </form>
-              <SentenceList
-                onDelete={deleteSentence}
-                sentences={activeSentences}
-              />
-            </Panel>
+              )}
+            </div>
           </section>
         )}
 
-        {view === "import" && (
-          <Panel
-            action={
-              <button
-                className="primary-button"
-                onClick={importSentences}
-                type="button"
-              >
-                导入当前课程包
-              </button>
-            }
-            className="import-panel"
-            title="批量导入"
-          >
-            <div className="format-note">
-              <strong>推荐课时分隔符：</strong>
-              <code>## 第1课 经济讨论</code>
-              <span>每个分隔符后面的句子会归入这一课。句子格式用：</span>
-              <code>英文=中文</code>
-            </div>
-            <textarea
-              onChange={(event) => {
-                setImportText(event.target.value);
-                setImportMessage(
-                  "推荐格式：## 第1课 标题，然后每行写 英文=中文。也兼容 英文=中文=音标。",
-                );
-              }}
-              placeholder={`## 第1课 经济讨论\nThe market is showing strong growth this quarter.=市场这个季度展现出强劲的增长。\nYeah, the economy is developing faster than most people expect.=是的，经济发展比大多数人预期的要快。\n\n## 第2课 商务成本\nThe interest rate is the major factor affecting business growth.=利率是影响业务增长的主要因素。\nBut the cost of operation is still very high.=但运营成本仍然很高。`}
-              spellCheck={false}
-              value={importText}
-            />
-            <div className="import-footer">
-              <span className="muted">{importMessage}</span>
-              <span className="muted">预览 {importRows.length} 句</span>
-            </div>
-            {importRows.length > 0 && (
-              <div className="preview-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>课时</th>
-                      <th>英文</th>
-                      <th>中文</th>
-                      <th>音标</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {importRows.slice(0, 30).map((row, index) => (
-                      <tr key={`${row.english}-${index}`}>
-                        <td>{row.lessonTitle}</td>
-                        <td>{row.english}</td>
-                        <td>{row.chinese}</td>
-                        <td>{row.phonetic}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+        {view === "courseDetail" && (
+          <section className="course-detail-page">
+            {activeCourse && activeSummary ? (
+              <>
+                <section className="course-cover">
+                  <button
+                    className="icon-text-button"
+                    onClick={() => openView("courses")}
+                    type="button"
+                  >
+                    <ArrowLeft size={17} />
+                    课程包
+                  </button>
+                  <div className="course-cover-main">
+                    <div>
+                      <div className="eyebrow">
+                        <BookOpen size={16} />
+                        {activeSummary.lessonCount} 课时 · {activeSummary.totalSentences} 句
+                      </div>
+                      <h2>{activeCourse.name}</h2>
+                      <p>
+                        {activeSummary.dueCount > 0
+                          ? `今天还有 ${activeSummary.dueCount} 句可以训练。`
+                          : "当前课程今日队列已完成。"}
+                      </p>
+                    </div>
+                    <div className="course-cover-actions">
+                      <button
+                        className="ghost-button"
+                        onClick={() => setShowImport((value) => !value)}
+                        type="button"
+                      >
+                        <Import size={17} />
+                        导入句子
+                      </button>
+                      <button
+                        className="primary-button"
+                        disabled={activeSummary.dueCount === 0}
+                        onClick={() => openStudy(activeCourse.id)}
+                        type="button"
+                      >
+                        <Play size={17} />
+                        继续学习
+                      </button>
+                    </div>
+                  </div>
+                  <ProgressBar value={activeSummary.progressPercent} />
+                  {activeSummary.duplicateCount > 1 && (
+                    <div className="notice compact">
+                      有 {activeSummary.duplicateCount} 个同名课程包，后续导入前请确认当前课程。
+                    </div>
+                  )}
+                </section>
+
+                <div className="detail-grid">
+                  <section className="lesson-section">
+                    <div className="section-heading">
+                      <h2>课时</h2>
+                      <span>{lessonSummaries.length} 个</span>
+                    </div>
+                    <LessonGrid lessons={lessonSummaries} />
+                  </section>
+
+                  <section className="side-stack">
+                    {showImport && (
+                      <Surface
+                        action={
+                          <button
+                            className="primary-button"
+                            disabled={importPreview.newCount === 0}
+                            onClick={importSentences}
+                            type="button"
+                          >
+                            <Import size={17} />
+                            导入
+                          </button>
+                        }
+                        title="批量导入"
+                      >
+                        <div className="import-format">
+                          <code>## 第一天</code>
+                          <code>English sentence.=中文意思</code>
+                        </div>
+                        <textarea
+                          onChange={(event) => {
+                            setImportText(event.target.value);
+                            setImportMessage(
+                              "粘贴课程文本后，会在下方预览课时和句子。",
+                            );
+                          }}
+                          placeholder={`## 第一天\nYeah, the economy is developing faster than most people expect.=是的，经济发展比大多数人预期的要快。\n\n## 第二天\nHey, did you receive my text yesterday?=嘿，你收到我昨天的短信了吗？`}
+                          spellCheck={false}
+                          value={importText}
+                        />
+                        <div className="import-footer">
+                          <span>{importMessage}</span>
+                          <span>
+                            新增 {importPreview.newCount} · 重复 {importPreview.duplicateCount}
+                          </span>
+                        </div>
+                        {importRows.length > 0 && (
+                          <ImportPreview rows={importRows.slice(0, 8)} />
+                        )}
+                      </Surface>
+                    )}
+
+                    <Surface title="添加单句">
+                      <form className="sentence-form" onSubmit={addSentence}>
+                        <input
+                          onChange={(event) =>
+                            setSentenceDraft({
+                              ...sentenceDraft,
+                              english: event.target.value,
+                            })
+                          }
+                          placeholder="英文句子"
+                          value={sentenceDraft.english}
+                        />
+                        <input
+                          onChange={(event) =>
+                            setSentenceDraft({
+                              ...sentenceDraft,
+                              chinese: event.target.value,
+                            })
+                          }
+                          placeholder="中文意思"
+                          value={sentenceDraft.chinese}
+                        />
+                        <input
+                          onChange={(event) =>
+                            setSentenceDraft({
+                              ...sentenceDraft,
+                              phonetic: event.target.value,
+                            })
+                          }
+                          placeholder="音标，可不填"
+                          value={sentenceDraft.phonetic}
+                        />
+                        <input
+                          onChange={(event) =>
+                            setSentenceDraft({
+                              ...sentenceDraft,
+                              note: event.target.value,
+                            })
+                          }
+                          placeholder="备注"
+                          value={sentenceDraft.note}
+                        />
+                        <button className="primary-button" type="submit">
+                          <Plus size={17} />
+                          添加句子
+                        </button>
+                      </form>
+                    </Surface>
+                  </section>
+                </div>
+
+                <Surface title="句子列表">
+                  <SentenceList onDelete={deleteSentence} sentences={activeSentences} />
+                </Surface>
+              </>
+            ) : (
+              <EmptyState
+                actionLabel="新建课程"
+                icon={LibraryBig}
+                onAction={() => openView("courses")}
+                title="先选择一个课程包"
+              />
             )}
-          </Panel>
+          </section>
         )}
 
         {view === "study" && (
           <section className={`study-layout ${queueCollapsed ? "queue-collapsed" : ""}`}>
             <section className="study-card">
-              {currentSentence ? (
+              {currentSentence && activeCourse ? (
                 <>
-                  <div className="card-meta">
-                    <button
-                      aria-label="toggle queue"
-                      className="icon-button"
-                      onClick={() => setQueueCollapsed((value) => !value)}
-                      type="button"
-                    >
-                      {queueCollapsed ? "=" : "x"}
-                    </button>
+                  <div className="study-topbar">
                     <button
                       className="icon-text-button"
-                      onClick={() => openView("dashboard")}
+                      onClick={() => openCourse(activeCourse.id)}
                       type="button"
                     >
-                      主页
+                      <ArrowLeft size={17} />
+                      {activeCourse.name}
                     </button>
-                    <span className="study-progress">
-                      {Math.min(sessionIndex + 1, session.length)} / {session.length}
-                    </span>
+                    <div className="study-progress">
+                      <span>
+                        {Math.min(sessionIndex + 1, session.length)} / {session.length}
+                      </span>
+                      <ProgressBar
+                        value={Math.round(
+                          ((sessionIndex + 1) / Math.max(1, session.length)) * 100,
+                        )}
+                      />
+                    </div>
                     <div className="study-tools">
                       <button
-                        className="icon-text-button"
+                        aria-label="朗读"
+                        className="icon-button"
                         onClick={() => speakEnglish(currentSentence.english)}
                         type="button"
                       >
-                        朗读
+                        <Volume2 size={19} />
                       </button>
                       <button
-                        className="icon-text-button"
+                        aria-label="显示答案"
+                        className="icon-button"
                         onClick={() => setShowingAnswer((value) => !value)}
                         type="button"
                       >
-                        答案
+                        <CheckCircle2 size={19} />
+                      </button>
+                      <button
+                        aria-label="学习队列"
+                        className="icon-button"
+                        onClick={() => setQueueCollapsed((value) => !value)}
+                        type="button"
+                      >
+                        {queueCollapsed ? <Menu size={19} /> : <X size={19} />}
                       </button>
                     </div>
                   </div>
 
                   <div className="card-prompt">
-                    <span className="prompt-label">
-                      看中文，同时听英文朗读。输入英文后提交。
-                    </span>
                     <div className="lesson-pill">{currentSentence.lessonTitle}</div>
                     <div className="card-word">{currentSentence.chinese}</div>
                   </div>
@@ -1313,10 +1780,10 @@ function App() {
                             onKeyDown={(event) =>
                               handleAnswerKeyDown(event, part.wordIndex)
                             }
-                            placeholder={"_".repeat(Math.max(3, part.text.length))}
+                            placeholder=""
                             spellCheck={false}
                             style={{
-                              width: `${Math.max(96, part.text.length * 28 + 30)}px`,
+                              width: `${Math.max(86, part.text.length * 22 + 28)}px`,
                             }}
                             value={answerWords[part.wordIndex] ?? ""}
                           />
@@ -1328,16 +1795,18 @@ function App() {
                       )}
                     </div>
                     <button className="study-submit-button" type="submit">
-                      {answerResult === "wrong" ? "重新提交错误词" : "提交答案"}
+                      {answerResult === "wrong" ? "重新提交错词" : "提交答案"}
                     </button>
                   </form>
 
                   {answerResult === "wrong" && (
-                    <div className="correction-panel">
-                      <div className="answer-result wrong">
-                        答案不一致。红色空格需要重新填写，其他单词已锁定。
-                      </div>
+                    <div className="answer-result wrong">
+                      红色空格需要重填，其他单词已锁定。
                     </div>
+                  )}
+
+                  {answerResult === "correct" && (
+                    <div className="answer-result correct">答对了，进入下一句。</div>
                   )}
 
                   {ttsStatus && <div className="tts-status">{ttsStatus}</div>}
@@ -1345,99 +1814,103 @@ function App() {
                   <div className={`card-back ${showingAnswer ? "" : "hidden"}`}>
                     <div className="answer-label">参考英文</div>
                     <div className="translation">{currentSentence.english}</div>
-                    <div className="phonetic">{currentSentence.phonetic}</div>
-                    <div className="note">{currentSentence.note}</div>
+                    {currentSentence.phonetic && (
+                      <div className="phonetic">{currentSentence.phonetic}</div>
+                    )}
+                    {currentSentence.note && <div className="note">{currentSentence.note}</div>}
                   </div>
-
-                  {answerResult === "correct" && (
-                    <div className="answer-result correct">回答正确，进入下一句...</div>
-                  )}
                 </>
               ) : (
                 <div className="study-complete">
-                  <div className="complete-mark">✓</div>
-                  <h2>今日队列已完成</h2>
-                  <p>当前课程包没有到期句子，可以继续导入新课或查看学习进度。</p>
+                  <div className="complete-mark">
+                    <Trophy size={28} />
+                  </div>
+                  <h2>今日队列完成</h2>
+                  <p>这门课程暂时没有到期句子。</p>
                   <div className="complete-stats">
-                    <Metric label="今日新学" value={todayStats.newCount} />
-                    <Metric label="今日复习" value={todayStats.reviewCount} />
-                    <Metric label="当前待学" value={activeDueCount} accent />
+                    <Metric icon={Target} label="今日完成" value={todayStats.reviewCount} />
+                    <Metric icon={Flame} label="连续天数" value={streakDays} />
+                    <Metric icon={ListChecks} label="当前待学" value={activeDueCount} accent />
                   </div>
                   <div className="complete-actions">
                     <button
                       className="primary-button"
-                      onClick={() => openView("import")}
+                      onClick={() => activeCourse && openCourse(activeCourse.id)}
                       type="button"
                     >
-                      导入更多
+                      <BookOpen size={17} />
+                      返回课程
                     </button>
                     <button
                       className="ghost-button"
-                      onClick={() => openView("stats")}
+                      onClick={() => openView("home")}
                       type="button"
                     >
-                      查看统计
+                      <Home size={17} />
+                      回首页
                     </button>
                   </div>
                 </div>
               )}
             </section>
             {!queueCollapsed && (
-            <Panel
-              action={
-                <button
-                  className="ghost-button"
-                  onClick={() => {
-                    setSessionIndex(0);
-                    resetAnswerState();
-                  }}
-                  type="button"
-                >
-                  刷新
-                </button>
-              }
-              title="学习队列"
-            >
-              <QueueList sentences={session} />
-            </Panel>
+              <Surface
+                action={
+                  <button
+                    className="small-action"
+                    onClick={() => {
+                      setSessionIndex(0);
+                      resetAnswerState();
+                    }}
+                    type="button"
+                  >
+                    <RefreshCw size={15} />
+                    重置
+                  </button>
+                }
+                className="queue-panel"
+                title="学习队列"
+              >
+                <QueueList items={studyQueue} />
+              </Surface>
             )}
           </section>
         )}
 
         {view === "stats" && (
-          <Panel title="课程包进度">
-            <div className="stats-list">
-              {state.coursePacks.length ? (
-                state.coursePacks.map((course) => {
-                  const sentences = state.sentences.filter(
-                    (sentence) => sentence.coursePackId === course.id,
-                  );
-                  const mastered = sentences.filter(
-                    (sentence) => sentence.status === "mastered",
-                  ).length;
-                  const percent = sentences.length
-                    ? Math.round((mastered / sentences.length) * 100)
-                    : 0;
-                  return (
-                    <div className="stat-row" key={course.id}>
-                      <div className="row-title">{course.name}</div>
-                      <div className="row-subtitle">
-                        {mastered} / {sentences.length} 已掌握
-                      </div>
-                      <div className="progress-track">
-                        <div
-                          className="progress-bar"
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <Empty text="暂无统计" />
-              )}
+          <section className="stats-page">
+            <div className="metric-grid">
+              <Metric icon={Target} label="今日完成" value={todayStats.reviewCount} />
+              <Metric icon={BookOpen} label="课程包" value={state.coursePacks.length} />
+              <Metric icon={ListChecks} label="句子总数" value={state.sentences.length} />
+              <Metric icon={Flame} label="连续天数" value={streakDays} accent />
             </div>
-          </Panel>
+            <Surface title="课程进度">
+              <div className="stats-list">
+                {courseSummaries.length ? (
+                  courseSummaries.map((summary) => (
+                    <div className="stat-row" key={summary.course.id}>
+                      <div>
+                        <div className="row-title">{summary.course.name}</div>
+                        <div className="row-subtitle">
+                          {summary.masteredCount}/{summary.totalSentences} 已掌握 ·{" "}
+                          {summary.dueCount} 待学
+                        </div>
+                      </div>
+                      <ProgressBar value={summary.progressPercent} />
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState
+                    actionLabel="去创建"
+                    icon={LibraryBig}
+                    onAction={() => openView("courses")}
+                    title="暂无统计"
+                  />
+                )}
+              </div>
+            </Surface>
+          </section>
         )}
       </main>
     </div>
@@ -1446,22 +1919,27 @@ function App() {
 
 function Metric({
   accent,
+  icon: Icon,
   label,
   value,
 }: {
   accent?: boolean;
+  icon: LucideIcon;
   label: string;
   value: number;
 }) {
   return (
     <article className={`metric ${accent ? "accent" : ""}`}>
+      <div className="metric-icon">
+        <Icon size={18} />
+      </div>
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
   );
 }
 
-function Panel({
+function Surface({
   action,
   children,
   className = "",
@@ -1473,8 +1951,8 @@ function Panel({
   title: string;
 }) {
   return (
-    <section className={`panel ${className}`}>
-      <div className="panel-header">
+    <section className={`surface ${className}`}>
+      <div className="surface-header">
         <h2>{title}</h2>
         {action}
       </div>
@@ -1483,84 +1961,74 @@ function Panel({
   );
 }
 
-function CourseList({
-  activeCoursePackId,
-  coursePacks,
-  onDelete,
-  onSelect,
-  sentences,
-}: {
-  activeCoursePackId?: string;
-  coursePacks: CoursePack[];
-  onDelete: (coursePackId: string) => void;
-  onSelect: (coursePackId: string) => void;
-  sentences: SentenceItem[];
-}) {
-  if (!coursePacks.length) return <Empty text="创建第一个课程包" />;
-
+function ProgressBar({ value }: { value: number }) {
+  const safeValue = Math.max(0, Math.min(100, value));
   return (
-    <div className="deck-list">
-      {coursePacks.map((course) => {
-        const courseSentences = sentences.filter(
-          (sentence) => sentence.coursePackId === course.id,
-        );
-        const due = getDueSentences(sentences, course.id).length;
-        const lessonCount = new Set(
-          courseSentences.map((sentence) => sentence.lessonTitle),
-        ).size;
-
-        return (
-          <div
-            className={`deck-row ${course.id === activeCoursePackId ? "active" : ""}`}
-            key={course.id}
-          >
-            <div>
-              <div className="row-title">{course.name}</div>
-              <div className="row-subtitle">
-                {lessonCount} 课 · {courseSentences.length} 句 · {due} 句待学
-              </div>
-            </div>
-            <div className="row-actions">
-              <button
-                className="small-button"
-                onClick={() => onSelect(course.id)}
-                type="button"
-              >
-                选择
-              </button>
-              <button
-                className="small-button danger"
-                onClick={() => onDelete(course.id)}
-                type="button"
-              >
-                删除
-              </button>
-            </div>
-          </div>
-        );
-      })}
+    <div className="progress-track" aria-label={`进度 ${safeValue}%`}>
+      <div className="progress-bar" style={{ width: `${safeValue}%` }} />
     </div>
   );
 }
 
-function LessonGrid({
-  lessons,
+function CourseCard({
+  onDelete,
+  onOpen,
+  onStudy,
+  summary,
 }: {
-  lessons: Array<{
-    title: string;
-    index: number;
-    total: number;
-    mastered: number;
-    due: number;
-  }>;
+  onDelete: (coursePackId: string) => void;
+  onOpen: (coursePackId: string) => void;
+  onStudy: (coursePackId: string) => void;
+  summary: CourseSummary;
 }) {
-  if (!lessons.length) {
-    return (
-      <div className="lesson-empty">
-        <strong>还没有课时</strong>
-        <span>先点击“导入课程”，按 `## 第一天` 这样的分隔符批量导入。</span>
+  return (
+    <article className="course-card">
+      <div className="course-card-top">
+        <div>
+          <div className="row-title">{summary.course.name}</div>
+          <div className="row-subtitle">
+            {summary.lessonCount} 课时 · {summary.totalSentences} 句
+          </div>
+        </div>
+        {summary.duplicateCount > 1 && <span className="warn-pill">同名</span>}
       </div>
-    );
+      <ProgressBar value={summary.progressPercent} />
+      <div className="course-card-meta">
+        <span>{summary.dueCount} 待学</span>
+        <span>{summary.progressPercent}%</span>
+      </div>
+      <div className="row-actions">
+        <button
+          className="small-button"
+          onClick={() => onOpen(summary.course.id)}
+          type="button"
+        >
+          查看
+        </button>
+        <button
+          className="small-button primary-small"
+          disabled={summary.dueCount === 0}
+          onClick={() => onStudy(summary.course.id)}
+          type="button"
+        >
+          学习
+        </button>
+        <button
+          aria-label={`删除 ${summary.course.name}`}
+          className="icon-button danger"
+          onClick={() => onDelete(summary.course.id)}
+          type="button"
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function LessonGrid({ lessons }: { lessons: LessonSummary[] }) {
+  if (!lessons.length) {
+    return <EmptyState icon={Import} title="还没有课时" />;
   }
 
   return (
@@ -1572,8 +2040,22 @@ function LessonGrid({
           <p>
             {lesson.mastered}/{lesson.total} 已掌握 · {lesson.due} 待学
           </p>
-          <span>最近学习</span>
+          <ProgressBar value={lesson.progressPercent} />
         </article>
+      ))}
+    </div>
+  );
+}
+
+function ImportPreview({ rows }: { rows: ImportRow[] }) {
+  return (
+    <div className="import-preview">
+      {rows.map((row, index) => (
+        <div className="preview-row" key={`${row.english}-${index}`}>
+          <span>{row.lessonTitle}</span>
+          <strong>{row.english}</strong>
+          <em>{row.chinese}</em>
+        </div>
       ))}
     </div>
   );
@@ -1586,12 +2068,14 @@ function SentenceList({
   onDelete: (sentenceId: string) => void;
   sentences: SentenceItem[];
 }) {
-  if (!sentences.length) return <Empty text="当前课程包还没有句子" />;
+  if (!sentences.length) {
+    return <EmptyState icon={BookOpen} title="当前课程还没有句子" />;
+  }
 
   return (
-    <div className="word-list">
+    <div className="sentence-list">
       {sentences.map((sentence) => (
-        <div className="word-row" key={sentence.id}>
+        <div className="sentence-row" key={sentence.id}>
           <div>
             <div className="row-title">{sentence.english}</div>
             <div className="row-subtitle">
@@ -1600,13 +2084,16 @@ function SentenceList({
             </div>
           </div>
           <div className="row-actions">
-            <span className="row-subtitle">{sentence.status}</span>
+            <span className={`status-pill ${sentence.status}`}>
+              {statusLabel(sentence.status)}
+            </span>
             <button
-              className="small-button danger"
+              aria-label="删除句子"
+              className="icon-button danger"
               onClick={() => onDelete(sentence.id)}
               type="button"
             >
-              删除
+              <Trash2 size={16} />
             </button>
           </div>
         </div>
@@ -1615,16 +2102,18 @@ function SentenceList({
   );
 }
 
-function QueueList({ sentences }: { sentences: SentenceItem[] }) {
-  if (!sentences.length) return <Empty text="当前课程包暂无待学习句子" />;
+function QueueList({ items }: { items: StudyQueueItem[] }) {
+  if (!items.length) {
+    return <EmptyState icon={CheckCircle2} title="当前队列已完成" />;
+  }
 
   return (
     <div className="queue-list">
-      {sentences.map((sentence) => (
-        <div className="queue-row" key={sentence.id}>
-          <div className="row-title">{sentence.english}</div>
+      {items.map((item) => (
+        <div className={`queue-row ${item.isCurrent ? "active" : ""}`} key={item.id}>
+          <div className="row-title">{item.english}</div>
           <div className="row-subtitle">
-            {sentence.lessonTitle} · {sentence.chinese} · {sentence.status}
+            {item.lessonTitle} · {item.chinese} · {statusLabel(item.status)}
           </div>
         </div>
       ))}
@@ -1632,10 +2121,26 @@ function QueueList({ sentences }: { sentences: SentenceItem[] }) {
   );
 }
 
-function Empty({ text }: { text: string }) {
+function EmptyState({
+  actionLabel,
+  icon: Icon,
+  onAction,
+  title,
+}: {
+  actionLabel?: string;
+  icon: LucideIcon;
+  onAction?: () => void;
+  title: string;
+}) {
   return (
-    <div className="queue-row">
-      <span className="muted">{text}</span>
+    <div className="empty-state">
+      <Icon size={24} />
+      <span>{title}</span>
+      {actionLabel && onAction && (
+        <button className="ghost-button" onClick={onAction} type="button">
+          {actionLabel}
+        </button>
+      )}
     </div>
   );
 }
