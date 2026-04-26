@@ -664,6 +664,14 @@ textarea:focus {
   gap: 12px;
   min-height: 144px;
   padding: 16px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.lesson-card:hover,
+.lesson-card.active {
+  border-color: #8fb8e8;
+  background: var(--blue-soft);
 }
 
 .lesson-card-index {
@@ -685,6 +693,25 @@ textarea:focus {
 .lesson-card p {
   color: var(--muted);
   font-size: 13px;
+}
+
+.lesson-detail-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lesson-detail-strip span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .import-format {

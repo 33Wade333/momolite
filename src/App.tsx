@@ -530,6 +530,8 @@ function App() {
   const [databaseHydrated, setDatabaseHydrated] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(true);
   const [ttsStatus, setTtsStatus] = useState("");
+  const [selectedLessonTitle, setSelectedLessonTitle] = useState<string | null>(null);
+  const [studyLessonTitle, setStudyLessonTitle] = useState<string | null>(null);
   const [lastStudy, setLastStudy] = useState<StudyBookmark | null>(() =>
     loadLastStudy(),
   );
@@ -608,10 +610,21 @@ function App() {
     () => buildLessonSummaries(activeSentences),
     [activeSentences],
   );
+  const selectedLessonSummary = selectedLessonTitle
+    ? lessonSummaries.find((lesson) => lesson.title === selectedLessonTitle)
+    : undefined;
+  const selectedLessonSentences = selectedLessonTitle
+    ? activeSentences.filter((sentence) => sentence.lessonTitle === selectedLessonTitle)
+    : activeSentences;
 
   const session = useMemo(
-    () => getDueSentences(state.sentences, activeCourse?.id).slice(0, 20),
-    [activeCourse?.id, state.sentences],
+    () =>
+      getDueSentences(state.sentences, activeCourse?.id)
+        .filter(
+          (sentence) => !studyLessonTitle || sentence.lessonTitle === studyLessonTitle,
+        )
+        .slice(0, 20),
+    [activeCourse?.id, state.sentences, studyLessonTitle],
   );
 
   const currentSentence = session[sessionIndex];
@@ -760,26 +773,37 @@ function App() {
     setView(next);
     if (next !== "study") {
       setQueueCollapsed(true);
+      setStudyLessonTitle(null);
     }
   }
 
   function openCourse(coursePackId: string) {
     updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
     setShowImport(false);
+    setSelectedLessonTitle(null);
     openView("courseDetail");
   }
 
-  function openStudy(coursePackId = activeCourse?.id, preferredSentenceId?: string | null) {
+  function openStudy(
+    coursePackId = activeCourse?.id,
+    preferredSentenceId?: string | null,
+    lessonTitle?: string | null,
+  ) {
     if (!coursePackId) return;
-    const courseSession = getDueSentences(state.sentences, coursePackId).slice(0, 20);
+    const courseSession = getDueSentences(state.sentences, coursePackId)
+      .filter((sentence) => !lessonTitle || sentence.lessonTitle === lessonTitle)
+      .slice(0, 20);
     const bookmarkSentenceId =
       preferredSentenceId ??
-      (lastStudy?.coursePackId === coursePackId ? lastStudy.sentenceId : null);
+      (!lessonTitle && lastStudy?.coursePackId === coursePackId
+        ? lastStudy.sentenceId
+        : null);
     const foundIndex = courseSession.findIndex(
       (sentence) => sentence.id === bookmarkSentenceId,
     );
 
     updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
+    setStudyLessonTitle(lessonTitle ?? null);
     setSessionIndex(foundIndex >= 0 ? foundIndex : 0);
     resetAnswerState();
     setQueueCollapsed(true);
@@ -884,6 +908,7 @@ function App() {
     }));
     setCourseName("");
     setShowImport(true);
+    setSelectedLessonTitle(null);
     setView("courseDetail");
   }
 
@@ -1165,6 +1190,7 @@ function App() {
       coursePacks: [coursePack, ...current.coursePacks],
       sentences: [...current.sentences, ...sentences],
     }));
+    setSelectedLessonTitle(null);
     setView("courseDetail");
   }
 
@@ -1179,8 +1205,7 @@ function App() {
     if (!wrong.size) {
       setAnswerResult("correct");
       setWrongIndexes(new Set());
-      setShowingAnswer(false);
-      window.setTimeout(() => applyRating("good", true), 260);
+      setShowingAnswer(true);
       return;
     }
 
@@ -1192,6 +1217,10 @@ function App() {
 
   function submitAnswer(event: FormEvent) {
     event.preventDefault();
+    if (answerResult === "correct") {
+      applyRating("good", true);
+      return;
+    }
     evaluateAnswer();
   }
 
@@ -1277,6 +1306,18 @@ function App() {
       return;
     }
 
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      focusNextEditableAnswerInput(wordIndex + 1);
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      focusPreviousEditableAnswerInput(wordIndex - 1);
+      return;
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
@@ -1292,6 +1333,22 @@ function App() {
         (input) => Number(input.dataset.wordIndex ?? "-1") >= startIndex,
       ) ?? inputs[0];
     nextInput?.focus();
+    nextInput?.select();
+  }
+
+  function focusPreviousEditableAnswerInput(startIndex: number) {
+    const inputs = [
+      ...document.querySelectorAll<HTMLInputElement>(".blank-input"),
+    ].filter((input) => !input.disabled);
+    const previousInput =
+      inputs
+        .slice()
+        .reverse()
+        .find(
+          (input) => Number(input.dataset.wordIndex ?? "-1") <= startIndex,
+        ) ?? inputs[inputs.length - 1];
+    previousInput?.focus();
+    previousInput?.select();
   }
 
   return (
@@ -1612,7 +1669,11 @@ function App() {
                       <h2>课时</h2>
                       <span>{lessonSummaries.length} 个</span>
                     </div>
-                    <LessonGrid lessons={lessonSummaries} />
+                    <LessonGrid
+                      activeTitle={selectedLessonTitle}
+                      lessons={lessonSummaries}
+                      onSelect={setSelectedLessonTitle}
+                    />
                   </section>
 
                   <section className="side-stack">
@@ -1709,8 +1770,44 @@ function App() {
                   </section>
                 </div>
 
-                <Surface title="句子列表">
-                  <SentenceList onDelete={deleteSentence} sentences={activeSentences} />
+                <Surface
+                  action={
+                    selectedLessonTitle ? (
+                      <div className="row-actions">
+                        <button
+                          className="ghost-button"
+                          onClick={() => setSelectedLessonTitle(null)}
+                          type="button"
+                        >
+                          查看全部
+                        </button>
+                        <button
+                          className="primary-button"
+                          disabled={!selectedLessonSummary || selectedLessonSummary.due === 0}
+                          onClick={() =>
+                            openStudy(activeCourse.id, null, selectedLessonTitle)
+                          }
+                          type="button"
+                        >
+                          <Play size={17} />
+                          学习本课
+                        </button>
+                      </div>
+                    ) : undefined
+                  }
+                  title={selectedLessonTitle ? `「${selectedLessonTitle}」句子` : "全部句子"}
+                >
+                  {selectedLessonTitle && selectedLessonSummary && (
+                    <div className="lesson-detail-strip">
+                      <span>{selectedLessonSummary.total} 句</span>
+                      <span>{selectedLessonSummary.due} 待学</span>
+                      <span>{selectedLessonSummary.mastered} 已掌握</span>
+                    </div>
+                  )}
+                  <SentenceList
+                    onDelete={deleteSentence}
+                    sentences={selectedLessonSentences}
+                  />
                 </Surface>
               </>
             ) : (
@@ -1736,7 +1833,7 @@ function App() {
                       type="button"
                     >
                       <ArrowLeft size={17} />
-                      {activeCourse.name}
+                      {studyLessonTitle ?? activeCourse.name}
                     </button>
                     <div className="study-progress">
                       <span>
@@ -1824,7 +1921,11 @@ function App() {
                       )}
                     </div>
                     <button className="study-submit-button" type="submit">
-                      {answerResult === "wrong" ? "重新提交错词" : "提交答案"}
+                      {answerResult === "correct"
+                        ? "下一句"
+                        : answerResult === "wrong"
+                          ? "重新提交错词"
+                          : "提交答案"}
                     </button>
                   </form>
 
@@ -1835,7 +1936,9 @@ function App() {
                   )}
 
                   {answerResult === "correct" && (
-                    <div className="answer-result correct">答对了，进入下一句。</div>
+                    <div className="answer-result correct">
+                      答对了。先看一遍完整英文，再进入下一句。
+                    </div>
                   )}
 
                   {ttsStatus && <div className="tts-status">{ttsStatus}</div>}
@@ -2055,7 +2158,15 @@ function CourseCard({
   );
 }
 
-function LessonGrid({ lessons }: { lessons: LessonSummary[] }) {
+function LessonGrid({
+  activeTitle,
+  lessons,
+  onSelect,
+}: {
+  activeTitle: string | null;
+  lessons: LessonSummary[];
+  onSelect: (title: string) => void;
+}) {
   if (!lessons.length) {
     return <EmptyState icon={Import} title="还没有课时" />;
   }
@@ -2063,14 +2174,19 @@ function LessonGrid({ lessons }: { lessons: LessonSummary[] }) {
   return (
     <div className="lesson-grid">
       {lessons.map((lesson) => (
-        <article className="lesson-card" key={lesson.title}>
+        <button
+          className={`lesson-card ${lesson.title === activeTitle ? "active" : ""}`}
+          key={lesson.title}
+          onClick={() => onSelect(lesson.title)}
+          type="button"
+        >
           <div className="lesson-card-index">#{lesson.index}</div>
           <h3>{lesson.title}</h3>
           <p>
             {lesson.mastered}/{lesson.total} 已掌握 · {lesson.due} 待学
           </p>
           <ProgressBar value={lesson.progressPercent} />
-        </article>
+        </button>
       ))}
     </div>
   );
