@@ -195,6 +195,23 @@ const initialState: AppState = {
   stats: {},
 };
 
+function hasTauriBridge() {
+  return (
+    typeof window !== "undefined" &&
+    "__TAURI_INTERNALS__" in window &&
+    Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  );
+}
+
+function safeInvoke<T>(command: string, args?: Record<string, unknown>) {
+  if (!hasTauriBridge()) {
+    return Promise.reject(
+      new Error("当前是网页预览环境，请用 MomoLite 桌面软件打开以连接 SQLite 和离线朗读。"),
+    );
+  }
+  return invoke<T>(command, args);
+}
+
 function uid(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
@@ -537,11 +554,16 @@ function App() {
   }
 
   useEffect(() => {
-    invoke<string>("init_database")
+    if (!hasTauriBridge()) {
+      setDatabaseHydrated(true);
+      return;
+    }
+
+    safeInvoke<string>("init_database")
       .then((path) => {
         setDatabasePath(path);
         setDatabaseError("");
-        return invoke<AppState>("load_app_state");
+        return safeInvoke<AppState>("load_app_state");
       })
       .then((loadedState) => {
         applyLoadedState(loadedState);
@@ -697,7 +719,7 @@ function App() {
 
     try {
       setTtsStatus("Piper 离线朗读");
-      const response = await invoke<TtsResponse>("synthesize_piper_tts", {
+      const response = await safeInvoke<TtsResponse>("synthesize_piper_tts", {
         request: { input: text },
       });
       const audio = new Audio(`data:audio/wav;base64,${response.audioBase64}`);
@@ -767,7 +789,7 @@ function App() {
   async function persistCoursePack(coursePack: CoursePack) {
     if (!databasePath || !databaseHydrated) return;
 
-    await invoke("create_course_pack", {
+    await safeInvoke("create_course_pack", {
       course: {
         id: coursePack.id,
         name: coursePack.name,
@@ -780,13 +802,13 @@ function App() {
 
   async function persistLesson(lesson: NewLesson) {
     if (!databasePath || !databaseHydrated) return;
-    await invoke("create_lesson", { lesson });
+    await safeInvoke("create_lesson", { lesson });
   }
 
   async function persistSentence(sentence: SentenceItem, lessonId: string) {
     if (!databasePath || !databaseHydrated) return;
 
-    await invoke("create_sentence", {
+    await safeInvoke("create_sentence", {
       sentence: {
         id: sentence.id,
         lessonId,
@@ -801,7 +823,7 @@ function App() {
 
   async function loadLessons(coursePackId: string) {
     if (!databasePath || !databaseHydrated) return [] as NewLesson[];
-    return invoke<NewLesson[]>("list_lessons", { coursePackId });
+    return safeInvoke<NewLesson[]>("list_lessons", { coursePackId });
   }
 
   async function ensureLessonId(
@@ -873,7 +895,7 @@ function App() {
 
     if (databasePath && databaseHydrated) {
       try {
-        await invoke("delete_course_pack", { coursePackId });
+        await safeInvoke("delete_course_pack", { coursePackId });
         setDatabaseError("");
       } catch (error) {
         setDatabaseError(String(error));
@@ -907,7 +929,7 @@ function App() {
 
     if (databasePath && databaseHydrated) {
       try {
-        await invoke("delete_sentence", { sentenceId });
+        await safeInvoke("delete_sentence", { sentenceId });
         setDatabaseError("");
       } catch (error) {
         setDatabaseError(String(error));
@@ -1236,7 +1258,7 @@ function App() {
     });
 
     if (databasePath && databaseHydrated) {
-      invoke("record_review", { review }).catch((error) => {
+      safeInvoke("record_review", { review }).catch((error) => {
         setDatabaseError(String(error));
       });
     }
@@ -1340,6 +1362,13 @@ function App() {
         {databaseError && (
           <div className="notice danger-notice">
             SQLite 连接异常：{databaseError}
+          </div>
+        )}
+
+        {!hasTauriBridge() && (
+          <div className="notice">
+            <BookOpen size={16} />
+            当前是网页预览，只能查看界面；SQLite 和 Piper 需要用 MomoLite 桌面软件打开。
           </div>
         )}
 
