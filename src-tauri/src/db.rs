@@ -544,19 +544,19 @@ pub fn load_app_state(app: AppHandle) -> Result<AppState, String> {
         .prepare(
             "
             SELECT
-                id,
-                sentence_id,
+                r.id,
+                r.sentence_id,
                 l.course_pack_id,
-                user_answer,
-                is_correct,
-                wrong_indexes,
-                rating,
-                interval_minutes,
-                reviewed_at
+                r.user_answer,
+                r.is_correct,
+                r.wrong_indexes,
+                r.rating,
+                r.interval_minutes,
+                r.reviewed_at
             FROM review_logs r
             JOIN sentence_items s ON s.id = r.sentence_id
             JOIN lessons l ON l.id = s.lesson_id
-            ORDER BY reviewed_at ASC
+            ORDER BY r.reviewed_at ASC
             ",
         )
         .map_err(|error| format!("failed to prepare review query: {error}"))?;
