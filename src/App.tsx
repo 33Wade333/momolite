@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { appDataDir } from "@tauri-apps/api/path";
+import { Stronghold, type Client } from "@tauri-apps/plugin-stronghold";
 import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
@@ -37,7 +39,16 @@ import {
 } from "./answerRules";
 import "./App.css";
 
-type View = "home" | "courses" | "courseDetail" | "study" | "stats";
+type View =
+  | "home"
+  | "vocabulary"
+  | "wordStudy"
+  | "scenes"
+  | "courses"
+  | "courseDetail"
+  | "study"
+  | "stats"
+  | "settings";
 type SentenceStatus = "new" | "learning" | "mastered";
 type Rating = "again" | "hard" | "good" | "easy";
 type AnswerResult = "idle" | "correct" | "wrong";
@@ -97,6 +108,54 @@ interface DailyStats {
   studyMinutes: number;
 }
 
+interface VocabularyBook {
+  id: string;
+  name: string;
+  source: string;
+  importedAt: string;
+  note: string;
+  itemCount: number;
+}
+
+interface VocabularyItem {
+  id: string;
+  text: string;
+  normalizedText: string;
+  primaryMeaning: string;
+  phonetic: string;
+  partOfSpeech: string;
+  example: string;
+  exampleCn: string;
+  roots: string;
+  wordFamily: string;
+  synonyms: string;
+  antonyms: string;
+  memoryHint: string;
+  tags: string;
+  difficulty: string;
+  familiarity: number;
+  weakScore: number;
+  reviewCount: number;
+  wrongCount: number;
+  lastReviewedAt: string | null;
+  nextReviewAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface VocabularyBookDetail {
+  book: VocabularyBook;
+  items: VocabularyItem[];
+}
+
+interface ImportVocabularyBookResult {
+  book: VocabularyBook;
+  items: VocabularyItem[];
+  importedCount: number;
+  reusedCount: number;
+  skippedCount: number;
+}
+
 interface AppState {
   activeCoursePackId: string;
   coursePacks: CoursePack[];
@@ -113,6 +172,22 @@ interface ImportRow {
   note: string;
 }
 
+interface VocabularyImportPreviewItem {
+  text: string;
+  primaryMeaning: string;
+  phonetic: string;
+  partOfSpeech: string;
+  example: string;
+  exampleCn: string;
+  roots: string;
+  wordFamily: string;
+  synonyms: string;
+  antonyms: string;
+  memoryHint: string;
+  tags: string;
+  difficulty: string;
+}
+
 interface NewLesson {
   id: string;
   coursePackId: string;
@@ -125,6 +200,172 @@ interface TtsResponse {
   audioBase64: string;
   cached: boolean;
   engine: string;
+}
+
+interface SyncSettings {
+  provider: string;
+  baseUrl: string;
+  username: string;
+  remotePath: string;
+  deviceId: string;
+  autoSyncEnabled: boolean;
+  lastSyncAt: string | null;
+  syncStatus: string;
+  lastError: string;
+  updatedAt: string;
+}
+
+interface SyncActionResult {
+  ok: boolean;
+  message: string;
+  remoteSnapshotUrl: string;
+  uploadedBytes: number;
+  mergedRows: number;
+  syncedAt: string;
+}
+
+interface LlmSettings {
+  provider: string;
+  baseUrl: string;
+  model: string;
+  wireApi: "chat_completions" | "responses";
+  reasoningEffort: "minimal" | "low" | "medium" | "high";
+  disableResponseStorage: boolean;
+  promptVersion: string;
+  temperature: number;
+  updatedAt: string;
+}
+
+interface LlmProfile extends LlmSettings {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+}
+
+interface EnrichedVocabularyEntry extends VocabularyImportPreviewItem {}
+
+interface EnrichVocabularyResponse {
+  entries: EnrichedVocabularyEntry[];
+  requestJson: string;
+  responseJson: string;
+}
+
+interface GeneratedScene {
+  id: string;
+  title: string;
+  scenario: string;
+  promptVersion: string;
+  model: string;
+  status: "generating" | "succeeded" | "failed";
+  targetWordsSnapshot: string;
+  requestJson: string;
+  responseJson: string;
+  errorMessage: string;
+  batchId: string | null;
+  plannedCoursePackId: string | null;
+  lessonId: string | null;
+  coverageJson: string;
+  isAddedToCourse: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SceneLine {
+  id: string;
+  sceneId: string;
+  sortOrder: number;
+  speaker: string;
+  english: string;
+  chinese: string;
+}
+
+interface GeneratedSceneDetail {
+  scene: GeneratedScene;
+  lines: SceneLine[];
+}
+
+interface SceneTargetWord {
+  id: string;
+  text: string;
+  meaning: string;
+  difficulty: string;
+  weakScore: number;
+}
+
+interface SceneCoverageSummary {
+  usedCoreWords: string[];
+  missingCoreWords: string[];
+  coreCoverageRate: number | null;
+}
+
+interface SceneGenerationBatch {
+  id: string;
+  title: string;
+  coursePackId: string | null;
+  selectedTopics: string;
+  wordSource: string;
+  coreWordCount: number;
+  supportWordCount: number;
+  plannedSceneCount: number;
+  status: string;
+  coverageSummary: string;
+  errorMessage: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SceneGenerationPlan {
+  id: string;
+  batchId: string;
+  sortOrder: number;
+  title: string;
+  topic: string;
+  coreWordIds: string;
+  supportWordIds: string;
+  coreWordsSnapshot: string;
+  supportWordsSnapshot: string;
+  status: string;
+  generatedSceneId: string | null;
+  errorMessage: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SceneBatchPlanResponse {
+  batch: SceneGenerationBatch;
+  plans: SceneGenerationPlan[];
+}
+
+interface AddScenesToCourseResponse {
+  createdLessons: number;
+  createdSentences: number;
+}
+
+interface LearningPlanSettings {
+  intensity: "light" | "standard" | "intensive";
+  desiredRetention: number;
+  dailyNewTarget: number;
+  dailyReviewLimit: number;
+  sceneLessonsTarget: number;
+  recoveryDays: number;
+  updatedAt: string;
+}
+
+interface DailyLearningPlan {
+  id: string;
+  planDate: string;
+  intensity: string;
+  newWordTarget: number;
+  reviewLimit: number;
+  sceneLessonTarget: number;
+  dueCount: number;
+  weakCount: number;
+  backlogCount: number;
+  planJson: string;
+  explanation: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface CourseSummary {
@@ -165,19 +406,42 @@ interface StudyBookmark {
 const DEFAULT_LESSON = "默认课时";
 const MANUAL_LESSON = "手动添加";
 const LAST_STUDY_KEY = "momolite:last-study";
+const WORD_BOOK_SAMPLE = `# CET4 核心词汇 Week 1
+
+## abandon
+
+- 中文释义：放弃；抛弃
+- 音标：/əˈbændən/
+- 词性：verb
+- 例句：She had to abandon the plan because of the weather.
+- 例句中文：因为天气原因，她不得不放弃这个计划。
+- 词根词缀：a- 表示离开；bandon 表示控制、命令
+- 同根词：abandoned, abandonment
+- 近义词：give up, quit, desert
+- 反义词：keep, continue, maintain
+- 形象记忆：把一个计划丢在路边，不再带着它往前走。
+- 场景标签：study, work, decision
+- 难度：B1`;
 
 const viewCopy: Record<View, { title: string; subtitle: string }> = {
   home: { title: "首页", subtitle: "今天继续一小步，英语句子更顺一点。" },
+  vocabulary: { title: "单词书", subtitle: "管理词书和词条；背词时进入专注模式。" },
+  wordStudy: { title: "背单词", subtitle: "专注复习当前队列。" },
+  scenes: { title: "AI 场景", subtitle: "先规划场景课，再生成可阅读、可入课的草稿。" },
   courses: { title: "课程包", subtitle: "整理你的句子材料和训练路径。" },
   courseDetail: { title: "课程详情", subtitle: "课时、导入和继续学习都在这里。" },
   study: { title: "中译英训练", subtitle: "看中文，听英文，补全原句。" },
   stats: { title: "统计", subtitle: "查看课程进度和最近学习表现。" },
+  settings: { title: "同步设置", subtitle: "配置坚果云 WebDAV、LLM API Key 和跨端同步。" },
 };
 
 const navItems: Array<{ view: View; label: string; icon: LucideIcon }> = [
   { view: "home", label: "首页", icon: Home },
+  { view: "vocabulary", label: "单词书", icon: BookOpen },
+  { view: "scenes", label: "AI 场景", icon: Sparkles },
   { view: "courses", label: "课程包", icon: LibraryBig },
   { view: "stats", label: "统计", icon: BarChart3 },
+  { view: "settings", label: "同步设置", icon: Menu },
 ];
 
 const ratingRules: Record<Rating, { minutes: number; status: SentenceStatus }> = {
@@ -187,12 +451,138 @@ const ratingRules: Record<Rating, { minutes: number; status: SentenceStatus }> =
   easy: { minutes: 10080, status: "mastered" },
 };
 
+const vocabularyRatingRules: Record<
+  Rating,
+  { label: string; minutes: number; tone: string }
+> = {
+  again: { label: "忘了", minutes: 10, tone: "danger" },
+  hard: { label: "模糊", minutes: 1440, tone: "warn" },
+  good: { label: "认识", minutes: 4320, tone: "primary" },
+  easy: { label: "熟悉", minutes: 10080, tone: "success" },
+};
+
 const initialState: AppState = {
   activeCoursePackId: "",
   coursePacks: [],
   sentences: [],
   reviews: [],
   stats: {},
+};
+
+const defaultSyncSettings: SyncSettings = {
+  provider: "jianguoyun_webdav",
+  baseUrl: "https://dav.jianguoyun.com/dav/",
+  username: "",
+  remotePath: "/MomoLite/sync/",
+  deviceId: "",
+  autoSyncEnabled: false,
+  lastSyncAt: null,
+  syncStatus: "idle",
+  lastError: "",
+  updatedAt: "",
+};
+
+const defaultLlmSettings: LlmSettings = {
+  provider: "gpt2",
+  baseUrl: "https://way.ydata.vip/v1",
+  model: "gpt-5.4",
+  wireApi: "responses",
+  reasoningEffort: "high",
+  disableResponseStorage: true,
+  promptVersion: "momolite-scene-v1",
+  temperature: 0.4,
+  updatedAt: "",
+};
+
+const defaultLlmProfile: LlmProfile = {
+  id: "default",
+  name: "我的中转站 GPT-5.4",
+  ...defaultLlmSettings,
+  isDefault: true,
+  createdAt: "",
+};
+
+const defaultLearningPlanSettings: LearningPlanSettings = {
+  intensity: "standard",
+  desiredRetention: 0.9,
+  dailyNewTarget: 25,
+  dailyReviewLimit: 160,
+  sceneLessonsTarget: 3,
+  recoveryDays: 3,
+  updatedAt: "",
+};
+
+const defaultDailyLearningPlan: DailyLearningPlan = {
+  id: "",
+  planDate: "",
+  intensity: "standard",
+  newWordTarget: 25,
+  reviewLimit: 160,
+  sceneLessonTarget: 3,
+  dueCount: 0,
+  weakCount: 0,
+  backlogCount: 0,
+  planJson: "{}",
+  explanation: "今天按标准强度推进：先背新词，再清理到期词，最后生成场景课。",
+  createdAt: "",
+  updatedAt: "",
+};
+
+const sceneTopicOptions = [
+  "commute and errands",
+  "work and project discussion",
+  "study and class",
+  "restaurant or cafe",
+  "shopping and payment",
+  "friends making plans",
+  "family daily talk",
+  "health and doctor",
+  "apartment repair",
+  "planning and decisions",
+  "conflict and apology",
+  "interview and networking",
+  "special daily scenario",
+];
+
+const llmProviderPresets: Record<
+  string,
+  {
+    label: string;
+    baseUrl: string;
+    model: string;
+    wireApi: LlmSettings["wireApi"];
+    reasoningEffort: LlmSettings["reasoningEffort"];
+    disableResponseStorage: boolean;
+    temperature: number;
+  }
+> = {
+  gpt2: {
+    label: "我的 gpt2 中转站（Responses）",
+    baseUrl: "https://way.ydata.vip/v1",
+    model: "gpt-5.4",
+    wireApi: "responses",
+    reasoningEffort: "high",
+    disableResponseStorage: true,
+    temperature: 0.4,
+  },
+  volcengine_ark: {
+    label: "火山方舟 / 豆包（填 ep 接入点）",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    model: "",
+    wireApi: "chat_completions",
+    reasoningEffort: "medium",
+    disableResponseStorage: false,
+    temperature: 0.4,
+  },
+  openai_compatible: {
+    label: "OpenAI-compatible",
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+    model: "gpt-4.1-mini",
+    wireApi: "chat_completions",
+    reasoningEffort: "medium",
+    disableResponseStorage: false,
+    temperature: 0.4,
+  },
 };
 
 function hasTauriBridge() {
@@ -210,6 +600,47 @@ function safeInvoke<T>(command: string, args?: Record<string, unknown>) {
     );
   }
   return invoke<T>(command, args);
+}
+
+function joinAppPath(base: string, filename: string) {
+  const separator = base.endsWith("/") || base.endsWith("\\") ? "" : "\\";
+  return `${base}${separator}${filename}`;
+}
+
+async function openSecretStore() {
+  const vaultKey = await safeInvoke<string>("get_secret_vault_key");
+  const vaultPath = joinAppPath(await appDataDir(), "momolite-secrets.hold");
+  const stronghold = await Stronghold.load(vaultPath, vaultKey);
+  let client: Client;
+  try {
+    client = await stronghold.loadClient("momolite");
+  } catch {
+    client = await stronghold.createClient("momolite");
+  }
+  return { stronghold, store: client.getStore() };
+}
+
+async function readSecret(key: string) {
+  const { store } = await openSecretStore();
+  const value = await store.get(key);
+  if (!value) return "";
+  return new TextDecoder().decode(value);
+}
+
+async function writeSecret(key: string, value: string) {
+  const { stronghold, store } = await openSecretStore();
+  await store.insert(key, Array.from(new TextEncoder().encode(value)));
+  await stronghold.save();
+}
+
+async function removeSecret(key: string) {
+  const { stronghold, store } = await openSecretStore();
+  await store.remove(key);
+  await stronghold.save();
+}
+
+function llmSecretKey(profileId: string) {
+  return `llm-api-key:${profileId || "default"}`;
 }
 
 function uid(prefix: string) {
@@ -325,6 +756,200 @@ function parseImport(text: string): ImportRow[] {
   return rows;
 }
 
+function emptyVocabularyPreviewItem(text: string): VocabularyImportPreviewItem {
+  return {
+    text,
+    primaryMeaning: "",
+    phonetic: "",
+    partOfSpeech: "",
+    example: "",
+    exampleCn: "",
+    roots: "",
+    wordFamily: "",
+    synonyms: "",
+    antonyms: "",
+    memoryHint: "",
+    tags: "",
+    difficulty: "",
+  };
+}
+
+function applyVocabularyPreviewField(
+  item: VocabularyImportPreviewItem,
+  key: string,
+  value: string,
+) {
+  const trimmedKey = key.trim();
+  if (["中文释义", "释义", "中文", "意思"].includes(trimmedKey)) {
+    item.primaryMeaning = value;
+  } else if (["音标", "发音"].includes(trimmedKey)) {
+    item.phonetic = value;
+  } else if (trimmedKey === "词性") {
+    item.partOfSpeech = value;
+  } else if (["例句", "英文例句"].includes(trimmedKey)) {
+    item.example = value;
+  } else if (["例句中文", "中文例句", "例句翻译"].includes(trimmedKey)) {
+    item.exampleCn = value;
+  } else if (["词根词缀", "词根", "词缀"].includes(trimmedKey)) {
+    item.roots = value;
+  } else if (["同根词", "词族", "派生词"].includes(trimmedKey)) {
+    item.wordFamily = value;
+  } else if (["近义词", "同义词"].includes(trimmedKey)) {
+    item.synonyms = value;
+  } else if (trimmedKey === "反义词") {
+    item.antonyms = value;
+  } else if (["形象记忆", "记忆法", "记忆提示"].includes(trimmedKey)) {
+    item.memoryHint = value;
+  } else if (["场景标签", "标签", "场景"].includes(trimmedKey)) {
+    item.tags = value;
+  } else if (trimmedKey === "难度") {
+    item.difficulty = value;
+  }
+}
+
+function parsePlainWordList(text: string) {
+  return text
+    .split(/[\n,，;；]+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+}
+
+function vocabularyEntriesToMarkdown(title: string, entries: VocabularyImportPreviewItem[]) {
+  const lines = [`# ${title || "LLM 补全词书"}`, ""];
+  for (const entry of entries) {
+    lines.push(`## ${entry.text}`, "");
+    lines.push(`- 中文释义：${entry.primaryMeaning}`);
+    if (entry.phonetic) lines.push(`- 音标：${entry.phonetic}`);
+    if (entry.partOfSpeech) lines.push(`- 词性：${entry.partOfSpeech}`);
+    if (entry.example) lines.push(`- 例句：${entry.example}`);
+    if (entry.exampleCn) lines.push(`- 例句中文：${entry.exampleCn}`);
+    if (entry.roots) lines.push(`- 词根词缀：${entry.roots}`);
+    if (entry.wordFamily) lines.push(`- 同根词：${entry.wordFamily}`);
+    if (entry.synonyms) lines.push(`- 近义词：${entry.synonyms}`);
+    if (entry.antonyms) lines.push(`- 反义词：${entry.antonyms}`);
+    if (entry.memoryHint) lines.push(`- 形象记忆：${entry.memoryHint}`);
+    if (entry.tags) lines.push(`- 场景标签：${entry.tags}`);
+    if (entry.difficulty) lines.push(`- 难度：${entry.difficulty}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function jsonArrayCount(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function parseSceneTargetWords(value: string): SceneTargetWord[] {
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        id: String(item.id ?? ""),
+        text: String(item.text ?? ""),
+        meaning: String(item.meaning ?? item.primaryMeaning ?? ""),
+        difficulty: String(item.difficulty ?? ""),
+        weakScore: Number(item.weak_score ?? item.weakScore ?? 0),
+      }))
+      .filter((item) => item.text);
+  } catch {
+    return [];
+  }
+}
+
+function parseSceneCoverage(value: string): SceneCoverageSummary {
+  try {
+    const parsed = JSON.parse(value);
+    return {
+      usedCoreWords: Array.isArray(parsed.usedCoreWords) ? parsed.usedCoreWords : [],
+      missingCoreWords: Array.isArray(parsed.missingCoreWords)
+        ? parsed.missingCoreWords
+        : [],
+      coreCoverageRate:
+        typeof parsed.coreCoverageRate === "number" ? parsed.coreCoverageRate : null,
+    };
+  } catch {
+    return {
+      usedCoreWords: [],
+      missingCoreWords: [],
+      coreCoverageRate: null,
+    };
+  }
+}
+
+function formatCoverageRate(rate: number | null) {
+  return rate === null ? "未计算" : `${Math.round(rate * 100)}%`;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightTargetWords(text: string, targets: SceneTargetWord[]) {
+  const patterns = targets
+    .map((target) => target.text.trim())
+    .filter((target) => target.length > 1)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegex);
+
+  if (!patterns.length) return text;
+
+  const matcher = new RegExp(`\\b(${patterns.join("|")})\\b`, "gi");
+  return text.split(matcher).map((part, index) =>
+    index % 2 === 1 ? (
+      <mark className="target-highlight" key={`${part}-${index}`}>
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
+function parseVocabularyBookPreview(text: string) {
+  const lines = text.replace(/\u200b/g, "").split(/\r?\n/);
+  let title = "";
+  let current: VocabularyImportPreviewItem | null = null;
+  const items: VocabularyImportPreviewItem[] = [];
+  let skipped = 0;
+
+  function commitCurrent() {
+    if (!current) return;
+    if (current.text.trim() && current.primaryMeaning.trim()) {
+      items.push(current);
+    } else {
+      skipped += 1;
+    }
+    current = null;
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("# ") && !title) {
+      title = trimmed.replace(/^#\s+/, "").trim();
+      continue;
+    }
+    if (trimmed.startsWith("## ")) {
+      commitCurrent();
+      current = emptyVocabularyPreviewItem(trimmed.replace(/^##\s+/, "").trim());
+      continue;
+    }
+    const match = trimmed.match(/^[-*]\s*([^：:]+)[：:]\s*(.+)$/);
+    if (match && current) {
+      applyVocabularyPreviewField(current, match[1], match[2].trim());
+    }
+  }
+  commitCurrent();
+
+  return { title, items, skipped };
+}
+
 function normalizeSentenceKey(english: string, chinese: string) {
   return `${english.trim().replace(/\s+/g, " ").toLocaleLowerCase()}|||${chinese.trim()}`;
 }
@@ -366,6 +991,10 @@ function formatShortDate(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "时间未知";
   return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
+function addMinutesIso(minutes: number) {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
 function statusLabel(status: SentenceStatus) {
@@ -532,6 +1161,54 @@ function App() {
   const [ttsStatus, setTtsStatus] = useState("");
   const [selectedLessonTitle, setSelectedLessonTitle] = useState<string | null>(null);
   const [studyLessonTitle, setStudyLessonTitle] = useState<string | null>(null);
+  const [vocabularyBooks, setVocabularyBooks] = useState<VocabularyBook[]>([]);
+  const [vocabularyItems, setVocabularyItems] = useState<VocabularyItem[]>([]);
+  const [vocabularyQueue, setVocabularyQueue] = useState<VocabularyItem[]>([]);
+  const [activeVocabularyBook, setActiveVocabularyBook] =
+    useState<VocabularyBookDetail | null>(null);
+  const [wordBookText, setWordBookText] = useState(WORD_BOOK_SAMPLE);
+  const [wordBookName, setWordBookName] = useState("");
+  const [wordBookMessage, setWordBookMessage] = useState(
+    "粘贴 Markdown 单词书后，会在下方预览可导入词条。",
+  );
+  const [showWordBookImport, setShowWordBookImport] = useState(false);
+  const [wordImportMode, setWordImportMode] = useState<"markdown" | "plain">("markdown");
+  const [wordCardIndex, setWordCardIndex] = useState(0);
+  const [wordCardRevealed, setWordCardRevealed] = useState(false);
+  const [syncSettings, setSyncSettings] = useState<SyncSettings>(defaultSyncSettings);
+  const [syncForm, setSyncForm] = useState<SyncSettings>(defaultSyncSettings);
+  const [webdavPassword, setWebdavPassword] = useState("");
+  const [syncMessage, setSyncMessage] = useState("首次配置请使用坚果云第三方应用密码。");
+  const [llmSettings, setLlmSettings] = useState<LlmSettings>(defaultLlmSettings);
+  const [llmForm, setLlmForm] = useState<LlmSettings>(defaultLlmSettings);
+  const [llmProfiles, setLlmProfiles] = useState<LlmProfile[]>([defaultLlmProfile]);
+  const [activeLlmProfileId, setActiveLlmProfileId] = useState(defaultLlmProfile.id);
+  const [llmProfileName, setLlmProfileName] = useState(defaultLlmProfile.name);
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmMessage, setLlmMessage] = useState("API Key 会保存到本机 Stronghold，不写入 SQLite。");
+  const [plainWordText, setPlainWordText] = useState("abandon\nmaintain\ncommute");
+  const [enrichedVocabulary, setEnrichedVocabulary] = useState<EnrichedVocabularyEntry[]>([]);
+  const [vocabularyEnrichMessage, setVocabularyEnrichMessage] = useState(
+    "也可以只粘贴单词，让 LLM 先补全释义、例句和记忆信息。",
+  );
+  const [learningPlanSettings, setLearningPlanSettings] = useState<LearningPlanSettings>(
+    defaultLearningPlanSettings,
+  );
+  const [dailyLearningPlan, setDailyLearningPlan] = useState<DailyLearningPlan>(
+    defaultDailyLearningPlan,
+  );
+  const [generatedScenes, setGeneratedScenes] = useState<GeneratedScene[]>([]);
+  const [activeScene, setActiveScene] = useState<GeneratedSceneDetail | null>(null);
+  const [sceneTopic, setSceneTopic] = useState("daily work and study");
+  const [sceneTitle, setSceneTitle] = useState("");
+  const [sceneBatchTitle, setSceneBatchTitle] = useState("今日 AI 场景课");
+  const [selectedSceneTopics, setSelectedSceneTopics] = useState<string[]>(
+    sceneTopicOptions.slice(0, 5),
+  );
+  const [showSceneAdvanced, setShowSceneAdvanced] = useState(false);
+  const [sceneCoursePackId, setSceneCoursePackId] = useState("");
+  const [sceneBatchPlan, setSceneBatchPlan] = useState<SceneBatchPlanResponse | null>(null);
+  const [sceneMessage, setSceneMessage] = useState("默认智能选择新词、弱词，先规划多节场景课。");
   const [lastStudy, setLastStudy] = useState<StudyBookmark | null>(() =>
     loadLastStudy(),
   );
@@ -555,6 +1232,87 @@ function App() {
     setDatabaseHydrated(true);
   }
 
+  async function refreshVocabularyData(preferredBookId?: string) {
+    if (!hasTauriBridge()) return;
+    const [books, items, queue] = await Promise.all([
+      safeInvoke<VocabularyBook[]>("list_vocabulary_books"),
+      safeInvoke<VocabularyItem[]>("list_vocabulary_items"),
+      safeInvoke<VocabularyItem[]>("get_today_vocabulary_queue", {
+        now: new Date().toISOString(),
+        limit: 20,
+      }),
+    ]);
+
+    setVocabularyBooks(books);
+    setVocabularyItems(items);
+    setVocabularyQueue(queue);
+    setWordCardIndex(0);
+    setWordCardRevealed(false);
+
+    const bookId = preferredBookId ?? books[0]?.id;
+    if (bookId) {
+      const detail = await safeInvoke<VocabularyBookDetail>("get_vocabulary_book", {
+        bookId,
+      });
+      setActiveVocabularyBook(detail);
+    } else {
+      setActiveVocabularyBook(null);
+    }
+  }
+
+  async function refreshCloudData() {
+    if (!hasTauriBridge()) return;
+    const [sync, llm, profiles, scenes, planSettings, todayPlan] = await Promise.all([
+      safeInvoke<SyncSettings>("get_sync_settings"),
+      safeInvoke<LlmSettings>("get_llm_settings"),
+      safeInvoke<LlmProfile[]>("list_llm_profiles"),
+      safeInvoke<GeneratedScene[]>("list_generated_scenes"),
+      safeInvoke<LearningPlanSettings>("get_learning_plan_settings"),
+      safeInvoke<DailyLearningPlan>("get_today_learning_plan", {
+        planDate: todayKey(),
+      }),
+    ]);
+    setSyncSettings(sync);
+    setSyncForm(sync);
+    setLlmSettings(llm);
+    setLlmForm(llm);
+    setLearningPlanSettings(planSettings);
+    setDailyLearningPlan(todayPlan);
+    const defaultProfile = profiles.find((profile) => profile.isDefault) ?? profiles[0];
+    setLlmProfiles(profiles.length ? profiles : [defaultLlmProfile]);
+    if (defaultProfile) {
+      setActiveLlmProfileId(defaultProfile.id);
+      setLlmProfileName(defaultProfile.name);
+      setLlmForm({
+        provider: defaultProfile.provider,
+        baseUrl: defaultProfile.baseUrl,
+        model: defaultProfile.model,
+        wireApi: defaultProfile.wireApi,
+        reasoningEffort: defaultProfile.reasoningEffort,
+        disableResponseStorage: defaultProfile.disableResponseStorage,
+        promptVersion: defaultProfile.promptVersion,
+        temperature: defaultProfile.temperature,
+        updatedAt: defaultProfile.updatedAt,
+      });
+    }
+    setGeneratedScenes(scenes);
+    if (scenes[0]) {
+      const detail = await safeInvoke<GeneratedSceneDetail>("get_generated_scene", {
+        sceneId: scenes[0].id,
+      });
+      setActiveScene(detail);
+    }
+    try {
+      setWebdavPassword(await readSecret("webdav-password"));
+      const profileKey = defaultProfile
+        ? await readSecret(llmSecretKey(defaultProfile.id))
+        : "";
+      setLlmApiKey(profileKey || (await readSecret("llm-api-key")));
+    } catch (error) {
+      setSyncMessage(`安全凭据读取失败：${String(error)}`);
+    }
+  }
+
   useEffect(() => {
     if (!hasTauriBridge()) {
       setDatabaseHydrated(true);
@@ -569,6 +1327,7 @@ function App() {
       })
       .then((loadedState) => {
         applyLoadedState(loadedState);
+        return Promise.all([refreshVocabularyData(), refreshCloudData()]);
       })
       .catch((error) => {
         setDatabaseError(String(error));
@@ -650,6 +1409,37 @@ function App() {
     courseSummaries.find((summary) => summary.course.id === lastStudy?.coursePackId) ??
     courseSummaries.find((summary) => summary.dueCount > 0) ??
     courseSummaries[0];
+  const vocabularyPreview = useMemo(
+    () => parseVocabularyBookPreview(wordBookText),
+    [wordBookText],
+  );
+  const currentVocabularyItem =
+    vocabularyQueue[Math.min(wordCardIndex, Math.max(0, vocabularyQueue.length - 1))];
+  const dueVocabularyCount = vocabularyQueue.length;
+  const weakVocabularyCount = vocabularyItems.filter((item) => item.weakScore > 0).length;
+  const activeBookReviewedCount =
+    activeVocabularyBook?.items.filter((item) => item.reviewCount > 0).length ?? 0;
+  const activeBookWeakCount =
+    activeVocabularyBook?.items.filter((item) => item.weakScore > 0).length ?? 0;
+  const sceneTargetWords = useMemo(() => {
+    const merged = [...vocabularyQueue, ...vocabularyItems.filter((item) => item.weakScore > 0)];
+    const seen = new Set<string>();
+    return merged
+      .filter((item) => {
+        if (seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      })
+      .slice(0, 15);
+  }, [vocabularyItems, vocabularyQueue]);
+  const activeSceneTargets = useMemo(
+    () => parseSceneTargetWords(activeScene?.scene.targetWordsSnapshot ?? ""),
+    [activeScene?.scene.targetWordsSnapshot],
+  );
+  const activeSceneCoverage = useMemo(
+    () => parseSceneCoverage(activeScene?.scene.coverageJson ?? ""),
+    [activeScene?.scene.coverageJson],
+  );
 
   const importPreview = useMemo(() => {
     const existingKeys = new Set(
@@ -774,6 +1564,9 @@ function App() {
     if (next !== "study") {
       setQueueCollapsed(true);
       setStudyLessonTitle(null);
+    }
+    if (next === "vocabulary") {
+      setWordCardRevealed(false);
     }
   }
 
@@ -1114,6 +1907,471 @@ function App() {
     }
   }
 
+  async function importVocabularyBook() {
+    if (!vocabularyPreview.items.length) {
+      setWordBookMessage("没有识别到可导入词条。至少需要 `## 单词` 和 `- 中文释义：...`。");
+      return;
+    }
+
+    try {
+      const result = await safeInvoke<ImportVocabularyBookResult>("import_vocabulary_book", {
+        request: {
+          name: wordBookName.trim() || vocabularyPreview.title || "未命名单词书",
+          source: "markdown",
+          rawText: wordBookText,
+          note: "",
+          importedAt: new Date().toISOString(),
+        },
+      });
+      await refreshVocabularyData(result.book.id);
+      setWordBookMessage(
+        `已导入 ${result.importedCount} 个新词，复用 ${result.reusedCount} 个旧词，跳过 ${result.skippedCount} 个不完整词条。`,
+      );
+      setDatabaseError("");
+    } catch (error) {
+      setDatabaseError(String(error));
+      setWordBookMessage(`导入失败：${String(error)}`);
+    }
+  }
+
+  async function openVocabularyBook(bookId: string) {
+    try {
+      const detail = await safeInvoke<VocabularyBookDetail>("get_vocabulary_book", {
+        bookId,
+      });
+      setActiveVocabularyBook(detail);
+      setDatabaseError("");
+    } catch (error) {
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function reviewVocabularyItem(rating: Rating) {
+    if (!currentVocabularyItem) return;
+    const rule = vocabularyRatingRules[rating];
+    const reviewedAt = new Date().toISOString();
+
+    try {
+      const updated = await safeInvoke<VocabularyItem>("review_vocabulary_item", {
+        review: {
+          vocabularyItemId: currentVocabularyItem.id,
+          mode: "card",
+          rating,
+          reviewedAt,
+          nextReviewAt: addMinutesIso(rule.minutes),
+        },
+      });
+      setVocabularyItems((items) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setVocabularyQueue((items) => items.filter((item) => item.id !== updated.id));
+      setWordCardIndex((index) =>
+        Math.max(0, Math.min(index, vocabularyQueue.length - 2)),
+      );
+      setWordCardRevealed(false);
+      setDatabaseError("");
+    } catch (error) {
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function saveSyncConfig(event?: FormEvent) {
+    event?.preventDefault();
+    try {
+      const saved = await safeInvoke<SyncSettings>("save_sync_settings", {
+        request: {
+          provider: syncForm.provider,
+          baseUrl: syncForm.baseUrl,
+          username: syncForm.username,
+          remotePath: syncForm.remotePath,
+          autoSyncEnabled: syncForm.autoSyncEnabled,
+        },
+      });
+      if (webdavPassword.trim()) {
+        await writeSecret("webdav-password", webdavPassword.trim());
+      }
+      setSyncSettings(saved);
+      setSyncForm(saved);
+      setSyncMessage("同步设置已保存，密码保存在本机 Stronghold。");
+      setDatabaseError("");
+      return saved;
+    } catch (error) {
+      setSyncMessage(`保存失败：${String(error)}`);
+      setDatabaseError(String(error));
+      return null;
+    }
+  }
+
+  async function testWebDavConnection() {
+    const saved = await saveSyncConfig();
+    if (!saved) return;
+    const password = webdavPassword.trim() || (await readSecret("webdav-password"));
+    try {
+      const result = await safeInvoke<SyncActionResult>("test_webdav_connection", {
+        request: { password },
+      });
+      setSyncMessage(`连接成功：${result.remoteSnapshotUrl}`);
+      await refreshCloudData();
+    } catch (error) {
+      setSyncMessage(`连接失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function runWebDavSync() {
+    const saved = await saveSyncConfig();
+    if (!saved) return;
+    const password = webdavPassword.trim() || (await readSecret("webdav-password"));
+    try {
+      const result = await safeInvoke<SyncActionResult>("run_webdav_sync", {
+        request: { password },
+      });
+      setSyncMessage(
+        `同步完成：合并 ${result.mergedRows} 行，上传 ${result.uploadedBytes} bytes`,
+      );
+      await refreshCloudData();
+    } catch (error) {
+      setSyncMessage(`同步失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function clearSyncCredential() {
+    try {
+      await removeSecret("webdav-password");
+      setWebdavPassword("");
+      setSyncMessage("已清除本机 WebDAV 密码。");
+    } catch (error) {
+      setSyncMessage(`清除失败：${String(error)}`);
+    }
+  }
+
+  async function selectLlmProfile(profileId: string) {
+    const profile = llmProfiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    setActiveLlmProfileId(profile.id);
+    setLlmProfileName(profile.name);
+    setLlmForm({
+      provider: profile.provider,
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+      wireApi: profile.wireApi,
+      reasoningEffort: profile.reasoningEffort,
+      disableResponseStorage: profile.disableResponseStorage,
+      promptVersion: profile.promptVersion,
+      temperature: profile.temperature,
+      updatedAt: profile.updatedAt,
+    });
+    try {
+      setLlmApiKey(await readSecret(llmSecretKey(profile.id)));
+    } catch (error) {
+      setLlmMessage(`读取配置密钥失败：${String(error)}`);
+    }
+  }
+
+  function startNewLlmProfile() {
+    setActiveLlmProfileId("");
+    setLlmProfileName("新的 LLM 配置");
+    setLlmForm(defaultLlmSettings);
+    setLlmApiKey("");
+  }
+
+  function openWordStudy() {
+    if (!vocabularyQueue.length) {
+      setWordBookMessage("今日暂无背词队列，可以先导入词书或调整学习计划。");
+      return;
+    }
+    setWordCardIndex(0);
+    setWordCardRevealed(false);
+    setView("wordStudy");
+  }
+
+  async function saveLlmConfig(event?: FormEvent) {
+    event?.preventDefault();
+    try {
+      const saved = await safeInvoke<LlmProfile>("save_llm_profile", {
+        request: {
+          id: activeLlmProfileId || null,
+          name: llmProfileName,
+          provider: llmForm.provider,
+          baseUrl: llmForm.baseUrl,
+          model: llmForm.model,
+          wireApi: llmForm.wireApi,
+          reasoningEffort: llmForm.reasoningEffort,
+          disableResponseStorage: llmForm.disableResponseStorage,
+          temperature: Number(llmForm.temperature),
+          isDefault: true,
+        },
+      });
+      if (llmApiKey.trim()) {
+        await writeSecret(llmSecretKey(saved.id), llmApiKey.trim());
+      }
+      setActiveLlmProfileId(saved.id);
+      setLlmProfileName(saved.name);
+      setLlmSettings(saved);
+      setLlmForm({
+        provider: saved.provider,
+        baseUrl: saved.baseUrl,
+        model: saved.model,
+        wireApi: saved.wireApi,
+        reasoningEffort: saved.reasoningEffort,
+        disableResponseStorage: saved.disableResponseStorage,
+        promptVersion: saved.promptVersion,
+        temperature: saved.temperature,
+        updatedAt: saved.updatedAt,
+      });
+      setLlmProfiles(await safeInvoke<LlmProfile[]>("list_llm_profiles"));
+      setLlmMessage("LLM 配置已保存，API Key 按配置保存在本机 Stronghold。");
+      setDatabaseError("");
+      return saved;
+    } catch (error) {
+      setLlmMessage(`保存失败：${String(error)}`);
+      setDatabaseError(String(error));
+      return null;
+    }
+  }
+
+  async function testLlmConfig() {
+    const saved = await saveLlmConfig();
+    if (!saved) return;
+    const apiKey = llmApiKey.trim() || (await readSecret(llmSecretKey(saved.id)));
+    if (!apiKey) {
+      setLlmMessage("请先填写 API Key。");
+      return;
+    }
+    try {
+      await safeInvoke<string>("test_llm_profile", {
+        request: { profileId: saved.id, apiKey },
+      });
+      setLlmMessage("连接测试成功。");
+    } catch (error) {
+      setLlmMessage(`连接测试失败：${String(error)}`);
+    }
+  }
+
+  async function deleteActiveLlmProfile() {
+    if (!activeLlmProfileId) return;
+    try {
+      await safeInvoke("delete_llm_profile", { profileId: activeLlmProfileId });
+      await removeSecret(llmSecretKey(activeLlmProfileId));
+      setLlmMessage("已删除当前 LLM 配置。");
+      await refreshCloudData();
+    } catch (error) {
+      setLlmMessage(`删除失败：${String(error)}`);
+    }
+  }
+
+  async function enrichPlainWords() {
+    const saved = await saveLlmConfig();
+    if (!saved) return;
+    const apiKey = llmApiKey.trim() || (await readSecret(llmSecretKey(saved.id)));
+    if (!apiKey) {
+      setVocabularyEnrichMessage("请先在同步设置页保存 LLM API Key。");
+      setView("settings");
+      return;
+    }
+    const words = parsePlainWordList(plainWordText);
+    if (!words.length) {
+      setVocabularyEnrichMessage("请先粘贴单词，每行一个或用逗号分隔。");
+      return;
+    }
+    setVocabularyEnrichMessage("正在让 LLM 补全词条，生成后会先预览。");
+    try {
+      const result = await safeInvoke<EnrichVocabularyResponse>("enrich_vocabulary_words", {
+        request: { profileId: saved.id, apiKey, words },
+      });
+      setEnrichedVocabulary(result.entries);
+      setVocabularyEnrichMessage(`已补全 ${result.entries.length} 个词条，请检查后再确认入库。`);
+      setWordBookText(vocabularyEntriesToMarkdown(wordBookName || "LLM 补全词书", result.entries));
+    } catch (error) {
+      setVocabularyEnrichMessage(`补全失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function importEnrichedVocabulary() {
+    if (!enrichedVocabulary.length) return;
+    const rawText = vocabularyEntriesToMarkdown(
+      wordBookName || "LLM 补全词书",
+      enrichedVocabulary,
+    );
+    try {
+      const result = await safeInvoke<ImportVocabularyBookResult>("import_vocabulary_book", {
+        request: {
+          name: wordBookName || "LLM 补全词书",
+          source: "llm_enriched_markdown",
+          rawText,
+          note: "由 LLM 补全后确认导入",
+          importedAt: new Date().toISOString(),
+        },
+      });
+      await refreshVocabularyData(result.book.id);
+      setVocabularyEnrichMessage(
+        `已入库 ${result.importedCount} 个新词，复用 ${result.reusedCount} 个旧词。`,
+      );
+    } catch (error) {
+      setVocabularyEnrichMessage(`入库失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function saveLearningIntensity(intensity: LearningPlanSettings["intensity"]) {
+    try {
+      const settings = await safeInvoke<LearningPlanSettings>("save_learning_plan_settings", {
+        request: { intensity },
+      });
+      const plan = await safeInvoke<DailyLearningPlan>("get_today_learning_plan", {
+        planDate: todayKey(),
+      });
+      setLearningPlanSettings(settings);
+      setDailyLearningPlan(plan);
+    } catch (error) {
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function openGeneratedScene(sceneId: string) {
+    try {
+      const detail = await safeInvoke<GeneratedSceneDetail>("get_generated_scene", {
+        sceneId,
+      });
+      setActiveScene(detail);
+    } catch (error) {
+      setSceneMessage(`读取场景失败：${String(error)}`);
+    }
+  }
+
+  async function generateScene() {
+    const saved = await saveLlmConfig();
+    if (!saved) return;
+    const apiKey = llmApiKey.trim() || (await readSecret(llmSecretKey(saved.id)));
+    if (!apiKey) {
+      setSceneMessage("请先在同步设置页保存 LLM API Key。");
+      setView("settings");
+      return;
+    }
+    const targetIds = sceneTargetWords.map((item) => item.id);
+    if (!targetIds.length) {
+      setSceneMessage("还没有可用于生成场景的单词，请先导入单词书。");
+      return;
+    }
+
+    setSceneMessage("正在生成场景，对话会按结构化 JSON 保存。");
+    try {
+      const detail = await safeInvoke<GeneratedSceneDetail>(
+        "generate_scene_from_vocabulary",
+        {
+          request: {
+            apiKey,
+            title: sceneTitle,
+            topic: sceneTopic,
+            vocabularyItemIds: targetIds,
+          },
+        },
+      );
+      setActiveScene(detail);
+      const scenes = await safeInvoke<GeneratedScene[]>("list_generated_scenes");
+      setGeneratedScenes(scenes);
+      setSceneMessage(`已生成：${detail.scene.title}`);
+      setDatabaseError("");
+    } catch (error) {
+      setSceneMessage(`生成失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function planSceneBatch() {
+    setSceneMessage("正在规划场景课，优先使用未学新词和弱词。");
+    try {
+      const plan = await safeInvoke<SceneBatchPlanResponse>("plan_scene_batch", {
+        request: {
+          title: sceneBatchTitle,
+          coursePackId: sceneCoursePackId || activeCourse?.id || null,
+          selectedTopics: selectedSceneTopics,
+          coreWordIds: [],
+        },
+      });
+      setSceneBatchPlan(plan);
+      setSceneMessage(
+        `已规划 ${plan.batch.plannedSceneCount} 节课，核心词 ${plan.batch.coreWordCount} 个。`,
+      );
+    } catch (error) {
+      setSceneMessage(`规划失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function generatePlannedSceneBatch() {
+    const saved = await saveLlmConfig();
+    if (!saved) return;
+    const apiKey = llmApiKey.trim() || (await readSecret(llmSecretKey(saved.id)));
+    if (!apiKey) {
+      setSceneMessage("请先在同步设置页保存 LLM API Key。");
+      setView("settings");
+      return;
+    }
+    const plan = sceneBatchPlan ?? (await safeInvoke<SceneBatchPlanResponse>("plan_scene_batch", {
+      request: {
+        title: sceneBatchTitle,
+        coursePackId: sceneCoursePackId || activeCourse?.id || null,
+        selectedTopics: selectedSceneTopics,
+        coreWordIds: [],
+      },
+    }));
+    setSceneBatchPlan(plan);
+    setSceneMessage("正在批量生成场景课，会自动校验核心词覆盖率。");
+    try {
+      const updated = await safeInvoke<SceneBatchPlanResponse>("generate_scene_batch", {
+        request: { batchId: plan.batch.id, profileId: saved.id, apiKey },
+      });
+      setSceneBatchPlan(updated);
+      const scenes = await safeInvoke<GeneratedScene[]>("list_generated_scenes");
+      setGeneratedScenes(scenes);
+      setSceneMessage(`批量生成完成：${updated.batch.status}`);
+    } catch (error) {
+      setSceneMessage(`批量生成失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function addCurrentBatchToCourse() {
+    const targetCourseId = sceneCoursePackId || activeCourse?.id;
+    if (!targetCourseId) {
+      setSceneMessage("请先选择要加入的课程。");
+      return;
+    }
+    const batchId = sceneBatchPlan?.batch.id;
+    const sceneIds = generatedScenes
+      .filter(
+        (scene) =>
+          scene.status === "succeeded" &&
+          !scene.isAddedToCourse &&
+          (!batchId || scene.batchId === batchId),
+      )
+      .map((scene) => scene.id);
+    if (!sceneIds.length) {
+      setSceneMessage("当前没有可加入课程的成功场景课。");
+      return;
+    }
+    try {
+      const result = await safeInvoke<AddScenesToCourseResponse>("add_scenes_to_course", {
+        request: { sceneIds, coursePackId: targetCourseId },
+      });
+      setSceneMessage(
+        `已加入课程：${result.createdLessons} 个课时，${result.createdSentences} 句。`,
+      );
+      const [loadedState, scenes] = await Promise.all([
+        safeInvoke<AppState>("load_app_state"),
+        safeInvoke<GeneratedScene[]>("list_generated_scenes"),
+      ]);
+      applyLoadedState(loadedState);
+      setGeneratedScenes(scenes);
+    } catch (error) {
+      setSceneMessage(`加入课程失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
   async function seedDemo() {
     const coursePack: CoursePack = {
       id: uid("course"),
@@ -1352,8 +2610,8 @@ function App() {
   }
 
   return (
-    <div className={`app-shell ${view === "study" ? "study-mode" : ""}`}>
-      {view !== "study" && (
+    <div className={`app-shell ${view === "study" || view === "wordStudy" ? "study-mode" : ""}`}>
+      {view !== "study" && view !== "wordStudy" && (
         <aside className="sidebar">
           <div className="brand">
             <div className="brand-mark">M</div>
@@ -1386,7 +2644,7 @@ function App() {
       )}
 
       <main className="workspace">
-        {view !== "study" && (
+        {view !== "study" && view !== "wordStudy" && (
           <header className="topbar">
             <div>
               <h1>{viewCopy[view].title}</h1>
@@ -1418,7 +2676,7 @@ function App() {
 
         {databaseError && (
           <div className="notice danger-notice">
-            SQLite 连接异常：{databaseError}
+            本地数据或外部服务异常：{databaseError}
           </div>
         )}
 
@@ -1444,21 +2702,23 @@ function App() {
                   <Sparkles size={16} />
                   今日训练
                 </div>
-                <h2>把中文提示变成自然英文。</h2>
+                <h2>先认得单词，再把它放进真实英文。</h2>
                 <p>
-                  {nextCourse
-                    ? `下一组：${nextCourse.course.name}`
-                    : "先创建一个课程包，再导入你的句子材料。"}
+                  {dueVocabularyCount
+                    ? `今日有 ${dueVocabularyCount} 个单词可以轻复习。`
+                    : nextCourse
+                      ? `下一组：${nextCourse.course.name}`
+                      : "先导入一本单词书，或创建一个课程包。"}
                 </p>
                 <div className="hero-actions">
                   <button
                     className="primary-button large"
-                    disabled={!nextCourse || nextCourse.dueCount === 0}
-                    onClick={() => openStudy(nextCourse?.course.id)}
+                    disabled={!dueVocabularyCount}
+                    onClick={openWordStudy}
                     type="button"
                   >
                     <Play size={18} />
-                    开始训练
+                    今日背词
                   </button>
                   <button
                     className="ghost-button large"
@@ -1468,7 +2728,7 @@ function App() {
                     type="button"
                   >
                     <LibraryBig size={18} />
-                    {nextCourse ? "查看课程" : "创建课程"}
+                    {nextCourse ? "句子训练" : "创建课程"}
                   </button>
                 </div>
               </div>
@@ -1489,11 +2749,73 @@ function App() {
             </section>
 
             <div className="metric-grid">
-              <Metric icon={Target} label="今日完成" value={todayStats.reviewCount} />
-              <Metric icon={ListChecks} label="待学习" value={dueCount} />
-              <Metric icon={Flame} label="连续天数" value={streakDays} accent />
-              <Metric icon={Trophy} label="已掌握" value={activeSummary?.masteredCount ?? 0} />
+              <Metric icon={Target} label="今日句子" value={todayStats.reviewCount} />
+              <Metric icon={BookOpen} label="单词书" value={vocabularyBooks.length} />
+              <Metric icon={ListChecks} label="待学句" value={dueCount} />
+              <Metric icon={Sparkles} label="场景课" value={generatedScenes.length} accent />
             </div>
+
+            <section className="dashboard-grid">
+              <Surface title="今日学习计划">
+                <div className="home-plan">
+                  <div className="home-plan-main">
+                    <span className="soft-badge accent">
+                      {learningPlanSettings.intensity === "light"
+                        ? "浅学"
+                        : learningPlanSettings.intensity === "intensive"
+                          ? "高强度"
+                          : "标准"}
+                    </span>
+                    <h3>
+                      新词 {dailyLearningPlan.newWordTarget} · 复习{" "}
+                      {dailyLearningPlan.dueCount} · 场景课{" "}
+                      {dailyLearningPlan.sceneLessonTarget}
+                    </h3>
+                    <p>{dailyLearningPlan.explanation}</p>
+                  </div>
+                  <div className="home-plan-actions">
+                    <button
+                      className="primary-button"
+                      disabled={!dueVocabularyCount}
+                      onClick={openWordStudy}
+                      type="button"
+                    >
+                      <Play size={17} />
+                      专注背词
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => openView("scenes")}
+                      type="button"
+                    >
+                      <Sparkles size={17} />
+                      生成场景课
+                    </button>
+                  </div>
+                </div>
+              </Surface>
+
+              <Surface title="记忆与内容">
+                <div className="mini-stat-grid">
+                  <div>
+                    <span>全局词条</span>
+                    <strong>{vocabularyItems.length}</strong>
+                  </div>
+                  <div>
+                    <span>今日队列</span>
+                    <strong>{dueVocabularyCount}</strong>
+                  </div>
+                  <div>
+                    <span>弱词</span>
+                    <strong>{weakVocabularyCount}</strong>
+                  </div>
+                  <div>
+                    <span>复习债</span>
+                    <strong>{dailyLearningPlan.backlogCount}</strong>
+                  </div>
+                </div>
+              </Surface>
+            </section>
 
             <section className="dashboard-grid">
               <Surface
@@ -1567,6 +2889,871 @@ function App() {
                 )}
               </Surface>
             </section>
+          </section>
+        )}
+
+        {view === "vocabulary" && (
+          <section className="vocabulary-page library-page">
+            <div className="library-actions">
+              <div className="segmented">
+                <button
+                  className={learningPlanSettings.intensity === "light" ? "active" : ""}
+                  onClick={() => saveLearningIntensity("light")}
+                  type="button"
+                >
+                  浅学
+                </button>
+                <button
+                  className={learningPlanSettings.intensity === "standard" ? "active" : ""}
+                  onClick={() => saveLearningIntensity("standard")}
+                  type="button"
+                >
+                  标准
+                </button>
+                <button
+                  className={learningPlanSettings.intensity === "intensive" ? "active" : ""}
+                  onClick={() => saveLearningIntensity("intensive")}
+                  type="button"
+                >
+                  高强度
+                </button>
+              </div>
+              <button
+                className="primary-button"
+                disabled={!dueVocabularyCount}
+                onClick={openWordStudy}
+                type="button"
+              >
+                <Play size={17} />
+                专注背词
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => setShowWordBookImport((value) => !value)}
+                type="button"
+              >
+                <Import size={17} />
+                {showWordBookImport ? "收起导入" : "新建/导入词书"}
+              </button>
+            </div>
+
+            <section className="library-shell">
+              <Surface className="library-sidebar-panel" title="词书">
+                <div className="wordbook-list library-list">
+                  {vocabularyBooks.length ? (
+                    vocabularyBooks.map((book) => (
+                      <button
+                        className={`wordbook-row ${
+                          activeVocabularyBook?.book.id === book.id ? "active" : ""
+                        }`}
+                        key={book.id}
+                        onClick={() => openVocabularyBook(book.id)}
+                        type="button"
+                      >
+                        <div>
+                          <div className="row-title">{book.name}</div>
+                          <div className="row-subtitle">
+                            {book.itemCount} 词 · {formatShortDate(book.importedAt)}
+                          </div>
+                        </div>
+                        <ChevronRight size={16} />
+                      </button>
+                    ))
+                  ) : (
+                    <EmptyState
+                      actionLabel="新建词书"
+                      icon={Import}
+                      onAction={() => setShowWordBookImport(true)}
+                      title="还没有单词书"
+                    />
+                  )}
+                </div>
+              </Surface>
+
+              <Surface
+                className="library-detail-panel"
+                title={activeVocabularyBook ? activeVocabularyBook.book.name : "词书详情"}
+              >
+                {showWordBookImport ? (
+                  <div className="import-drawer">
+                    <div className="segmented">
+                      <button
+                        className={wordImportMode === "markdown" ? "active" : ""}
+                        onClick={() => setWordImportMode("markdown")}
+                        type="button"
+                      >
+                        Markdown 词书
+                      </button>
+                      <button
+                        className={wordImportMode === "plain" ? "active" : ""}
+                        onClick={() => setWordImportMode("plain")}
+                        type="button"
+                      >
+                        只给单词
+                      </button>
+                    </div>
+                    <input
+                      onChange={(event) => setWordBookName(event.target.value)}
+                      placeholder={vocabularyPreview.title || "先输入词书名称"}
+                      value={wordBookName}
+                    />
+                    {wordImportMode === "markdown" ? (
+                      <>
+                        <textarea
+                          onChange={(event) => {
+                            setWordBookText(event.target.value);
+                            setWordBookMessage("粘贴 Markdown 单词书后，会在下方预览。");
+                          }}
+                          spellCheck={false}
+                          value={wordBookText}
+                        />
+                        <div className="import-footer">
+                          <span>{wordBookMessage}</span>
+                          <span>
+                            识别 {vocabularyPreview.items.length} · 跳过{" "}
+                            {vocabularyPreview.skipped}
+                          </span>
+                        </div>
+                        {vocabularyPreview.items.length > 0 && (
+                          <VocabularyPreview items={vocabularyPreview.items.slice(0, 5)} />
+                        )}
+                        <button
+                          className="primary-button"
+                          disabled={!vocabularyPreview.items.length}
+                          onClick={importVocabularyBook}
+                          type="button"
+                        >
+                          <Import size={17} />
+                          创建并导入
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <textarea
+                          onChange={(event) => setPlainWordText(event.target.value)}
+                          placeholder="每行一个单词，也可以用逗号分隔"
+                          spellCheck={false}
+                          value={plainWordText}
+                        />
+                        <div className="import-footer">
+                          <span>{vocabularyEnrichMessage}</span>
+                          <span>{parsePlainWordList(plainWordText).length} 个词</span>
+                        </div>
+                        <div className="button-row">
+                          <button
+                            className="ghost-button"
+                            onClick={enrichPlainWords}
+                            type="button"
+                          >
+                            <Sparkles size={17} />
+                            LLM 补全预览
+                          </button>
+                          <button
+                            className="primary-button"
+                            disabled={!enrichedVocabulary.length}
+                            onClick={importEnrichedVocabulary}
+                            type="button"
+                          >
+                            <CheckCircle2 size={17} />
+                            确认入库
+                          </button>
+                        </div>
+                        {enrichedVocabulary.length > 0 && (
+                          <VocabularyPreview items={enrichedVocabulary.slice(0, 6)} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : activeVocabularyBook ? (
+                  <div className="book-detail-view">
+                    <div className="book-summary-strip">
+                      <div>
+                        <span>词条</span>
+                        <strong>{activeVocabularyBook.items.length}</strong>
+                      </div>
+                      <div>
+                        <span>已复习</span>
+                        <strong>{activeBookReviewedCount}</strong>
+                      </div>
+                      <div>
+                        <span>弱项</span>
+                        <strong>{activeBookWeakCount}</strong>
+                      </div>
+                      <button
+                        className="primary-button"
+                        disabled={!dueVocabularyCount}
+                        onClick={openWordStudy}
+                        type="button"
+                      >
+                        <Play size={17} />
+                        开始复习
+                      </button>
+                    </div>
+                    <VocabularyList items={activeVocabularyBook.items} />
+                  </div>
+                ) : (
+                  <EmptyState
+                    actionLabel="新建词书"
+                    icon={BookOpen}
+                    onAction={() => setShowWordBookImport(true)}
+                    title="选择一本词书，或新建导入"
+                  />
+                )}
+              </Surface>
+            </section>
+          </section>
+        )}
+
+        {view === "wordStudy" && (
+          <section className="word-focus-page">
+            {currentVocabularyItem ? (
+              <>
+                <header className="word-focus-topbar">
+                  <button
+                    className="icon-button"
+                    onClick={() => openView("vocabulary")}
+                    type="button"
+                    aria-label="退出背词"
+                  >
+                    <X size={24} />
+                  </button>
+                  <div>{Math.min(wordCardIndex + 1, vocabularyQueue.length)}/{vocabularyQueue.length}</div>
+                  <button
+                    className="icon-button"
+                    onClick={() => setWordCardRevealed((value) => !value)}
+                    type="button"
+                    aria-label="切换详情"
+                  >
+                    <Menu size={22} />
+                  </button>
+                </header>
+
+                <main className="word-focus-card">
+                  <section className="word-focus-hero">
+                    <h2>{currentVocabularyItem.text}</h2>
+                    <div className="word-focus-phonetic">
+                      {currentVocabularyItem.partOfSpeech || "word"}
+                      {currentVocabularyItem.phonetic ? ` · ${currentVocabularyItem.phonetic}` : ""}
+                      <button
+                        className="icon-button"
+                        onClick={() => speakEnglish(currentVocabularyItem.text)}
+                        type="button"
+                        aria-label="朗读"
+                      >
+                        <Volume2 size={18} />
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="word-focus-meaning">
+                    <strong>{currentVocabularyItem.primaryMeaning}</strong>
+                  </section>
+
+                  {wordCardRevealed ? (
+                    <section className="word-focus-scroll">
+                      {currentVocabularyItem.example && (
+                        <div className="focus-section">
+                          <h3>例句</h3>
+                          <p>{currentVocabularyItem.example}</p>
+                          {currentVocabularyItem.exampleCn && <em>{currentVocabularyItem.exampleCn}</em>}
+                        </div>
+                      )}
+                      <WordDetailGrid item={currentVocabularyItem} />
+                    </section>
+                  ) : (
+                    <button
+                      className="focus-reveal-button"
+                      onClick={() => setWordCardRevealed(true)}
+                      type="button"
+                    >
+                      展开例句和助记
+                    </button>
+                  )}
+                </main>
+
+                <footer className="word-focus-actions">
+                  <button
+                    className="rating-button danger"
+                    onClick={() => reviewVocabularyItem("again")}
+                    type="button"
+                  >
+                    忘记
+                  </button>
+                  <button
+                    className="rating-button warn"
+                    onClick={() => reviewVocabularyItem("hard")}
+                    type="button"
+                  >
+                    模糊
+                  </button>
+                  <button
+                    className="rating-button primary"
+                    onClick={() => reviewVocabularyItem("good")}
+                    type="button"
+                  >
+                    认识
+                  </button>
+                  <button
+                    className="rating-button success"
+                    onClick={() => reviewVocabularyItem("easy")}
+                    type="button"
+                  >
+                    熟悉
+                  </button>
+                </footer>
+              </>
+            ) : (
+              <div className="study-complete">
+                <div className="complete-mark">
+                  <CheckCircle2 size={28} />
+                </div>
+                <h2>今日单词队列完成</h2>
+                <p>可以去生成场景课，把今天的词放进真实对话里。</p>
+                <div className="complete-actions">
+                  <button className="ghost-button" onClick={() => openView("vocabulary")} type="button">
+                    返回词书
+                  </button>
+                  <button className="primary-button" onClick={() => openView("scenes")} type="button">
+                    生成场景课
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {view === "scenes" && (
+          <section className="scenes-page">
+            <section className="scene-workbench">
+              <Surface
+                className="scene-planner"
+                action={
+                  <button
+                    className="small-button"
+                    onClick={() => setShowSceneAdvanced((value) => !value)}
+                    type="button"
+                  >
+                    <Menu size={16} />
+                    设置
+                  </button>
+                }
+                title="场景课生成"
+              >
+                <div className="scene-planner-main">
+                  <div>
+                    <div className="eyebrow">
+                      <Sparkles size={16} />
+                      AI 场景课
+                    </div>
+                    <h2>把今天的词编成一组能读、能听、能练的课。</h2>
+                    <div className="scene-topic-summary">
+                      {selectedSceneTopics.slice(0, 4).map((topic) => (
+                        <span key={topic}>{topic}</span>
+                      ))}
+                      {selectedSceneTopics.length > 4 && (
+                        <span>+{selectedSceneTopics.length - 4}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="scene-command-stack">
+                    <button className="ghost-button" onClick={planSceneBatch} type="button">
+                      <ListChecks size={17} />
+                      规划
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!vocabularyItems.length}
+                      onClick={generatePlannedSceneBatch}
+                      type="button"
+                    >
+                      <Sparkles size={17} />
+                      生成
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={addCurrentBatchToCourse}
+                      type="button"
+                    >
+                      <Plus size={17} />
+                      入课
+                    </button>
+                  </div>
+                </div>
+
+                <div className="scene-planner-strip">
+                  <div>
+                    <span>核心词池</span>
+                    <strong>{sceneBatchPlan?.batch.coreWordCount ?? sceneTargetWords.length}</strong>
+                  </div>
+                  <div>
+                    <span>预计课数</span>
+                    <strong>{sceneBatchPlan?.batch.plannedSceneCount ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>草稿</span>
+                    <strong>{generatedScenes.filter((scene) => !scene.isAddedToCourse).length}</strong>
+                  </div>
+                </div>
+
+                <div className="target-word-shelf">
+                  {sceneTargetWords.length ? (
+                    sceneTargetWords.slice(0, 12).map((word) => (
+                      <span className="target-word-pill" key={word.id}>
+                        {word.text}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="muted">暂无可生成的目标词</span>
+                  )}
+                  {sceneTargetWords.length > 12 && (
+                    <span className="target-word-pill">+{sceneTargetWords.length - 12}</span>
+                  )}
+                </div>
+
+                {showSceneAdvanced && (
+                  <div className="scene-advanced">
+                    <div className="scene-field-grid">
+                      <input
+                        onChange={(event) => setSceneBatchTitle(event.target.value)}
+                        placeholder="批次名，例如 CET4 Week 1 晚间复习"
+                        value={sceneBatchTitle}
+                      />
+                      <select
+                        onChange={(event) => setSceneCoursePackId(event.target.value)}
+                        value={sceneCoursePackId}
+                      >
+                        <option value="">先生成草稿</option>
+                        {state.coursePacks.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="topic-chip-grid">
+                      {sceneTopicOptions.map((topic) => (
+                        <button
+                          className={`topic-chip ${
+                            selectedSceneTopics.includes(topic) ? "active" : ""
+                          }`}
+                          aria-pressed={selectedSceneTopics.includes(topic)}
+                          key={topic}
+                          onClick={() =>
+                            setSelectedSceneTopics((current) =>
+                              current.includes(topic)
+                                ? current.filter((item) => item !== topic)
+                                : [...current, topic],
+                            )
+                          }
+                          type="button"
+                        >
+                          {topic}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="single-scene-row">
+                      <input
+                        onChange={(event) => setSceneTitle(event.target.value)}
+                        placeholder="单课标题，可留空"
+                        value={sceneTitle}
+                      />
+                      <input
+                        onChange={(event) => setSceneTopic(event.target.value)}
+                        placeholder="单课主题"
+                        value={sceneTopic}
+                      />
+                      <button
+                        className="small-button"
+                        disabled={!sceneTargetWords.length}
+                        onClick={generateScene}
+                        type="button"
+                      >
+                        单课
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {sceneBatchPlan && (
+                  <div className="plan-strip">
+                    {sceneBatchPlan.plans.slice(0, 6).map((plan) => (
+                      <div className="plan-chip" key={plan.id}>
+                        <strong>第 {plan.sortOrder + 1} 课</strong>
+                        <span>
+                          {jsonArrayCount(plan.coreWordIds)} 词 · {plan.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="status-text">{sceneMessage}</p>
+              </Surface>
+
+              <Surface className="scene-drafts" title="草稿箱">
+                <div className="scene-card-list">
+                  {generatedScenes.length ? (
+                    generatedScenes.map((scene) => (
+                      <button
+                        className={`scene-card ${
+                          activeScene?.scene.id === scene.id ? "active" : ""
+                        }`}
+                        key={scene.id}
+                        onClick={() => openGeneratedScene(scene.id)}
+                        type="button"
+                      >
+                        <div>
+                          <strong>{scene.title}</strong>
+                          <span>
+                            {scene.status}
+                            {scene.isAddedToCourse ? " · 已入课" : " · 草稿"} ·{" "}
+                            {jsonArrayCount(scene.targetWordsSnapshot)} 词 ·{" "}
+                            {formatShortDate(scene.updatedAt)}
+                          </span>
+                        </div>
+                        <ChevronRight size={16} />
+                      </button>
+                    ))
+                  ) : (
+                    <EmptyState icon={Sparkles} title="还没有场景课草稿" />
+                  )}
+                </div>
+              </Surface>
+            </section>
+
+            <Surface className="scene-reader-surface" title={activeScene ? "沉浸阅读" : "阅读区"}>
+              {activeScene ? (
+                <article className="scene-reader">
+                  <header className="scene-reader-header">
+                    <div>
+                      <span className="soft-badge accent">AI 场景课</span>
+                      <h2>{activeScene.scene.title}</h2>
+                      <p>{activeScene.scene.scenario}</p>
+                    </div>
+                    <div className="scene-reader-meta">
+                      <span>{activeScene.lines.length} 句</span>
+                      <span>{activeSceneTargets.length} 词</span>
+                      <span>{formatCoverageRate(activeSceneCoverage.coreCoverageRate)}</span>
+                      <span>{activeScene.scene.isAddedToCourse ? "已入课程" : "草稿"}</span>
+                    </div>
+                  </header>
+
+                  {activeSceneTargets.length > 0 && (
+                    <section className="reader-word-index">
+                      <div className="reader-section-title">
+                        <ListChecks size={16} />
+                        核心词索引
+                      </div>
+                      <div className="reader-word-grid">
+                        {activeSceneTargets.map((word) => (
+                          <div className="reader-word" key={word.id || word.text}>
+                            <strong>{word.text}</strong>
+                            <span>{word.meaning || word.difficulty || "目标词"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  <div className="immersive-lines">
+                    {activeScene.lines.map((line, index) => (
+                      <section className="immersive-line" key={line.id}>
+                        <div className="speaker-chip">
+                          {line.speaker || (index % 2 ? "B" : "A")}
+                        </div>
+                        <div className="line-body">
+                          <p className="line-en">
+                            {highlightTargetWords(line.english, activeSceneTargets)}
+                          </p>
+                          <p className="line-cn">{line.chinese}</p>
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </article>
+              ) : (
+                <EmptyState icon={Sparkles} title="点击一节场景课，进入阅读视图" />
+              )}
+            </Surface>
+          </section>
+        )}
+
+        {view === "settings" && (
+          <section className="settings-page">
+            <div className="settings-grid">
+              <Surface title="坚果云 WebDAV 同步">
+                <form className="settings-form" onSubmit={saveSyncConfig}>
+                  <label>
+                    服务商
+                    <input
+                      readOnly
+                      value={syncForm.provider === "jianguoyun_webdav" ? "坚果云 WebDAV" : syncForm.provider}
+                    />
+                  </label>
+                  <label>
+                    WebDAV 地址
+                    <input
+                      onChange={(event) =>
+                        setSyncForm((current) => ({
+                          ...current,
+                          baseUrl: event.target.value,
+                        }))
+                      }
+                      value={syncForm.baseUrl}
+                    />
+                  </label>
+                  <label>
+                    账号
+                    <input
+                      onChange={(event) =>
+                        setSyncForm((current) => ({
+                          ...current,
+                          username: event.target.value,
+                        }))
+                      }
+                      placeholder="坚果云账号邮箱"
+                      value={syncForm.username}
+                    />
+                  </label>
+                  <label>
+                    第三方应用密码
+                    <input
+                      onChange={(event) => setWebdavPassword(event.target.value)}
+                      placeholder={webdavPassword ? "已保存，输入新密码可覆盖" : "不是网页登录密码"}
+                      type="password"
+                      value={webdavPassword}
+                    />
+                  </label>
+                  <label>
+                    远程目录
+                    <input
+                      onChange={(event) =>
+                        setSyncForm((current) => ({
+                          ...current,
+                          remotePath: event.target.value,
+                        }))
+                      }
+                      value={syncForm.remotePath}
+                    />
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      checked={syncForm.autoSyncEnabled}
+                      onChange={(event) =>
+                        setSyncForm((current) => ({
+                          ...current,
+                          autoSyncEnabled: event.target.checked,
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                    自动同步
+                  </label>
+                  <div className="button-row">
+                    <button className="primary-button" type="submit">
+                      保存
+                    </button>
+                    <button className="ghost-button" onClick={testWebDavConnection} type="button">
+                      测试连接
+                    </button>
+                    <button className="ghost-button" onClick={runWebDavSync} type="button">
+                      立即同步
+                    </button>
+                    <button className="small-button" onClick={clearSyncCredential} type="button">
+                      清除凭据
+                    </button>
+                  </div>
+                  <p className="status-text">
+                    {syncMessage} 状态：{syncSettings.syncStatus}
+                  </p>
+                </form>
+              </Surface>
+
+              <Surface title="LLM 场景生成">
+                <form className="settings-form" onSubmit={saveLlmConfig}>
+                  <label>
+                    配置档案
+                    <select
+                      onChange={(event) => selectLlmProfile(event.target.value)}
+                      value={activeLlmProfileId}
+                    >
+                      {llmProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                          {profile.isDefault ? " · 默认" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    配置名称
+                    <input
+                      onChange={(event) => setLlmProfileName(event.target.value)}
+                      placeholder="例如：我的中转站 GPT-5.4"
+                      value={llmProfileName}
+                    />
+                  </label>
+                  <label>
+                    Provider
+                    <select
+                      onChange={(event) => {
+                        const provider = event.target.value;
+                        const preset = llmProviderPresets[provider];
+                        setLlmForm((current) => ({
+                          ...current,
+                          provider,
+                          baseUrl: preset?.baseUrl ?? current.baseUrl,
+                          model: preset?.model ?? current.model,
+                          wireApi: preset?.wireApi ?? current.wireApi,
+                          reasoningEffort:
+                            preset?.reasoningEffort ?? current.reasoningEffort,
+                          disableResponseStorage:
+                            preset?.disableResponseStorage ??
+                            current.disableResponseStorage,
+                          temperature: preset?.temperature ?? current.temperature,
+                        }));
+                      }}
+                      value={llmForm.provider}
+                    >
+                      {Object.entries(llmProviderPresets).map(([value, preset]) => (
+                        <option key={value} value={value}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Wire API
+                    <select
+                      onChange={(event) =>
+                        setLlmForm((current) => ({
+                          ...current,
+                          wireApi: event.target.value as LlmSettings["wireApi"],
+                        }))
+                      }
+                      value={llmForm.wireApi}
+                    >
+                      <option value="responses">Responses</option>
+                      <option value="chat_completions">Chat Completions</option>
+                    </select>
+                  </label>
+                  <label>
+                    API 地址
+                    <input
+                      onChange={(event) =>
+                        setLlmForm((current) => ({
+                          ...current,
+                          baseUrl: event.target.value,
+                        }))
+                      }
+                      value={llmForm.baseUrl}
+                    />
+                  </label>
+                  <label>
+                    Model
+                    <input
+                      onChange={(event) =>
+                        setLlmForm((current) => ({
+                          ...current,
+                          model: event.target.value,
+                        }))
+                      }
+                      placeholder={
+                        llmForm.provider === "volcengine_ark"
+                          ? "填写火山方舟推理接入点 ID，例如 ep-xxxxxxxx"
+                          : llmForm.provider === "gpt2"
+                            ? "gpt-5.4"
+                          : "填写模型名，例如 gpt-4.1-mini"
+                      }
+                      value={llmForm.model}
+                    />
+                  </label>
+                  {llmForm.wireApi === "responses" && (
+                    <>
+                      <label>
+                        Reasoning Effort
+                        <select
+                          onChange={(event) =>
+                            setLlmForm((current) => ({
+                              ...current,
+                              reasoningEffort:
+                                event.target.value as LlmSettings["reasoningEffort"],
+                            }))
+                          }
+                          value={llmForm.reasoningEffort}
+                        >
+                          <option value="minimal">minimal</option>
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                        </select>
+                      </label>
+                      <label className="inline-check">
+                        <input
+                          checked={llmForm.disableResponseStorage}
+                          onChange={(event) =>
+                            setLlmForm((current) => ({
+                              ...current,
+                              disableResponseStorage: event.target.checked,
+                            }))
+                          }
+                          type="checkbox"
+                        />
+                        disable_response_storage / store=false
+                      </label>
+                    </>
+                  )}
+                  <label>
+                    Temperature
+                    <input
+                      max={2}
+                      min={0}
+                      onChange={(event) =>
+                        setLlmForm((current) => ({
+                          ...current,
+                          temperature: Number(event.target.value),
+                        }))
+                      }
+                      step={0.1}
+                      type="number"
+                      value={llmForm.temperature}
+                    />
+                  </label>
+                  <label>
+                    API Key
+                    <input
+                      onChange={(event) => setLlmApiKey(event.target.value)}
+                      placeholder={llmApiKey ? "已保存，输入新 Key 可覆盖" : "仅保存在本机 Stronghold"}
+                      type="password"
+                      value={llmApiKey}
+                    />
+                  </label>
+                  <div className="button-row">
+                    <button className="primary-button" type="submit">
+                      保存配置
+                    </button>
+                    <button className="ghost-button" onClick={testLlmConfig} type="button">
+                      测试连接
+                    </button>
+                    <button className="ghost-button" onClick={startNewLlmProfile} type="button">
+                      新建配置
+                    </button>
+                    <button className="small-button" onClick={deleteActiveLlmProfile} type="button">
+                      删除配置
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => openView("scenes")}
+                      type="button"
+                    >
+                      去生成场景
+                    </button>
+                  </div>
+                  <p className="status-text">
+                    {llmMessage} Prompt：{llmSettings.promptVersion}。Responses 模式按 reasoning effort 控制，temperature 不随请求发送。
+                  </p>
+                </form>
+              </Surface>
+            </div>
           </section>
         )}
 
@@ -2200,6 +4387,72 @@ function ImportPreview({ rows }: { rows: ImportRow[] }) {
           <span>{row.lessonTitle}</span>
           <strong>{row.english}</strong>
           <em>{row.chinese}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VocabularyPreview({ items }: { items: VocabularyImportPreviewItem[] }) {
+  return (
+    <div className="import-preview">
+      {items.map((item, index) => (
+        <div className="preview-row" key={`${item.text}-${index}`}>
+          <span>{item.partOfSpeech || item.difficulty || "词条"}</span>
+          <strong>{item.text}</strong>
+          <em>{item.primaryMeaning}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WordDetailGrid({ item }: { item: VocabularyItem }) {
+  const details = [
+    ["词根词缀", item.roots],
+    ["同根词", item.wordFamily],
+    ["近义词", item.synonyms],
+    ["反义词", item.antonyms],
+    ["形象记忆", item.memoryHint],
+    ["场景标签", item.tags],
+  ].filter(([, value]) => value);
+
+  if (!details.length) {
+    return null;
+  }
+
+  return (
+    <div className="word-detail-grid">
+      {details.map(([label, value]) => (
+        <div className="word-detail" key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VocabularyList({ items }: { items: VocabularyItem[] }) {
+  if (!items.length) {
+    return <EmptyState icon={BookOpen} title="暂无词条" />;
+  }
+
+  return (
+    <div className="vocabulary-list">
+      {items.map((item) => (
+        <div className="vocabulary-row" key={item.id}>
+          <div>
+            <div className="row-title">{item.text}</div>
+            <div className="row-subtitle">
+              {item.primaryMeaning}
+              {item.phonetic ? ` · ${item.phonetic}` : ""}
+            </div>
+          </div>
+          <div className="word-score">
+            <span>{item.familiarity}</span>
+            <small>熟悉度</small>
+          </div>
         </div>
       ))}
     </div>

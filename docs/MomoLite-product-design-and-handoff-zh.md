@@ -74,7 +74,7 @@ C:\Users\Administrator\Documents\Codex\2026-04-26\new-chat\momolite\src-tauri\ta
 - 课程包：8 个
 - 课时：52 个
 - 句子：444 条
-- 学习记录：1 条
+- 学习记录：2 条
 - 每日统计：1 条
 
 当前核心表：
@@ -200,6 +200,7 @@ Hey, did you receive my text yesterday?=嘿，你收到我昨天的短信了吗�
 - `9851589` fix: qualify review log query columns
 - `1ff0f95` feat: improve lesson study flow
 - `0d5b2c5` docs: add product handoff and roadmap
+- `7a9dd64` docs: add Chinese product design handoff
 
 后续继续保持：
 
@@ -362,17 +363,17 @@ MomoLite 后续应把这个 skill 中的理念产品化，而不是简单复制 
 
 - 首页
   - 今日继续学习
-  - 今日词汇批次
+  - 今日背词
   - 最近生成场景
   - 错句复习
   - 少量关键统计
 - 词汇
   - 导入词汇
-  - 词汇批次
-  - 单词卡片复习
+  - 单词书
+  - 无痛背词卡片
   - 熟悉度管理
 - 场景生成
-  - 选择词汇批次
+  - 选择单词书或今日词队列
   - 设置场景风格和难度
   - LLM 生成预览
   - 覆盖率检查
@@ -406,7 +407,7 @@ MomoLite 后续应把这个 skill 中的理念产品化，而不是简单复制 
 
 ```text
 词汇输入
--> 词汇批次
+-> 单词书和全局词库
 -> 场景生成
 -> 沉浸阅读
 -> 中译英主动回忆
@@ -438,11 +439,11 @@ MomoLite 后续应把这个 skill 中的理念产品化，而不是简单复制 
 
 MVP 功能：
 
-- 粘贴文本或导入 CSV。
+- 粘贴 Markdown 单词书。
 - 自动识别英文词、短语、中文释义。
 - 预览识别结果。
 - 用户确认后保存。
-- 按 `word + meaning + batch` 做去重。
+- 按 `normalized_text` 做全局词汇身份识别，批次只记录本次导入关系。
 - 记录来源、日期、熟悉度。
 
 需要用户提供：
@@ -453,22 +454,34 @@ MVP 功能：
 建议数据表：
 
 ```sql
-vocabulary_batches
+vocabulary_books
 - id
 - name
 - source
 - imported_at
+- raw_text
 - note
 
 vocabulary_items
 - id
-- batch_id
-- word
-- meaning
+- item_type                 -- word / phrase
+- text                      -- 原始词或短语
+- normalized_text           -- 小写、去空格、去多余标点后的全局身份
+- primary_meaning
 - phonetic
 - example
 - familiarity
+- created_at
+- updated_at
+
+vocabulary_book_items
+- id
+- book_id
+- vocabulary_item_id
+- meaning_snapshot          -- 本次导入看到的释义快照
 - source_status
+- source_line
+- imported_at
 - created_at
 - updated_at
 
@@ -478,6 +491,13 @@ vocabulary_reviews
 - rating
 - reviewed_at
 ```
+
+关键原则：
+
+- 不要把 `batch_id` 直接放在 `vocabulary_items` 里作为唯一归属。
+- 同一个词跨天导入时，应复用同一个 `vocabulary_items` 词条。
+- `vocabulary_book_items` 负责记录“这个词在哪一本单词书里出现过”。
+- 后续薄弱词、跨场景复现、长期复习历史都依赖全局词汇身份。
 
 ### 14.2 背单词与轻复习模块
 
@@ -528,12 +548,15 @@ MVP 配置项：
 - API Key 只保存在本地。
 - 不上传用户词汇和学习数据，除非用户主动调用 LLM。
 - 调用 LLM 前明确告诉用户哪些词会被发送。
+- MVP 优先把 API Key 存到 Windows Credential Manager 或等价本地凭据管理器，SQLite 只保存 provider、base URL、model 和 key reference。
+- 如果短期为了开发先明文保存到 SQLite 或配置文件，必须在 UI 中明确提示“仅本机明文保存”，并在路线图里标记为临时方案。
+- 后端读取设置时默认只返回脱敏后的 key，例如 `sk-****abcd`，不要把完整 key 回传给前端展示。
 
 ### 14.4 场景对话生成模块
 
 输入：
 
-- 词汇批次。
+- 单词书或今日词队列。
 - 目标词数量。
 - 场景风格。
 - 难度。
@@ -558,6 +581,65 @@ MVP 配置项：
 - 允许同一个词的变形出现，但要能映射回原目标词。
 - 如果对话显得生硬，要支持重新生成。
 
+LLM 结构化输出契约：
+
+生成结果不能只依赖一大段 Markdown 或自然语言。v0.4 开始应要求模型返回 JSON，并在保存前校验结构。
+
+```json
+{
+  "schema_version": "scene_generation.v1",
+  "prompt_version": "momolite_scene_prompt_v1",
+  "scene": {
+    "title": "string",
+    "title_cn": "string",
+    "scene_type": "daily_life",
+    "difficulty": "B1",
+    "description": "string",
+    "lines": [
+      {
+        "sort_order": 1,
+        "speaker": "A",
+        "english": "string",
+        "chinese": "string",
+        "target_matches": [
+          {
+            "vocabulary_item_id": "optional-local-id",
+            "target_text": "expect",
+            "normalized_target": "expect",
+            "matched_text": "expects",
+            "start": 12,
+            "end": 19
+          }
+        ]
+      }
+    ],
+    "key_expressions": [
+      {
+        "english": "string",
+        "chinese": "string",
+        "note": "string"
+      }
+    ],
+    "coverage": {
+      "target_count": 12,
+      "covered_count": 12,
+      "coverage_rate": 1,
+      "missing_targets": []
+    },
+    "quality_notes": []
+  }
+}
+```
+
+保存前必须记录：
+
+- `prompt_version`。
+- 输入词汇快照，避免后续批次修改后无法追溯。
+- provider、model、temperature 等模型参数。
+- 生成状态：`draft` / `saved` / `failed`。
+- 失败原因和原始响应，方便排错。
+- JSON 校验失败时不要直接保存为课程，要提示用户重试或修复。
+
 建议数据表：
 
 ```sql
@@ -568,9 +650,17 @@ generated_scenes
 - title_cn
 - scene_type
 - difficulty
+- status
+- prompt_version
+- input_snapshot_json
+- model_provider
+- model_name
+- model_params_json
 - prompt
 - raw_response
+- parsed_json
 - coverage_rate
+- error_message
 - created_at
 
 scene_lines
@@ -584,8 +674,14 @@ scene_lines
 scene_vocabulary_links
 - id
 - scene_id
+- scene_line_id
 - vocabulary_item_id
+- target_text
+- normalized_target
 - matched_text
+- start_offset
+- end_offset
+- occurrence_order
 ```
 
 ### 14.5 沉浸式复习模块
@@ -649,7 +745,7 @@ scene_vocabulary_links
 推荐首页内容：
 
 - 今日继续学习。
-- 最近词汇批次。
+- 最近单词书。
 - 最近生成场景。
 - 错句复习入口。
 - 今日目标进度。
@@ -682,9 +778,10 @@ scene_vocabulary_links
 建议新增命令：
 
 ```text
-import_vocabulary_batch
-list_vocabulary_batches
-get_vocabulary_batch
+import_vocabulary_book
+list_vocabulary_books
+get_vocabulary_book
+list_vocabulary_items
 review_vocabulary_item
 save_llm_settings
 get_llm_settings
@@ -704,6 +801,9 @@ submit_dictation_answer
 - Rust 后端负责 SQLite、文件、TTS、LLM 调用封装。
 - 复杂导入解析可以先放前端，稳定后再沉到 Rust。
 - 所有写数据库的操作都要可测试。
+- 写入词汇时后端要保证全局词汇身份和批次关联一致，不要只依赖前端去重。
+- LLM 相关命令要校验 JSON schema，保存失败响应和错误原因。
+- API Key 不应直接作为普通字段在前端来回展示。
 
 ## 16. UI 和体验原则
 
@@ -739,43 +839,45 @@ submit_dictation_answer
 
 ## 17. 下一阶段开发路线图
 
-### v0.3：词汇导入与基础词汇库
+### v0.3：单词书导入与基础词汇库
 
 目标：
 
-- 建立“背单词 app -> MomoLite”的输入管道。
+- 建立“外部单词书 -> MomoLite”的输入管道。
 
 任务：
 
-- 新增词汇模块入口。
-- 支持粘贴或导入词汇文本。
-- 根据真实导出样例写解析器。
+- 新增单词书模块入口。
+- 支持粘贴 Markdown 单词书。
+- 根据约定 Markdown 格式写解析器。
 - 做导入预览。
-- 新增 `vocabulary_batches` 和 `vocabulary_items`。
-- 保存词汇批次。
-- 展示词汇批次详情。
-- 做最简单的单词卡片复习。
+- 新增 `vocabulary_books`、`vocabulary_items`、`vocabulary_book_items`、`vocabulary_reviews`。
+- 保存单词书。
+- 展示单词书详情。
+- 做无痛背词卡片复习。
 
 验收：
 
 - 用户能导入 10 到 20 行真实导出词汇。
-- 能看到批次。
+- 能看到单词书。
 - 能看到每个词和释义。
 - 重复词不会无限新增。
+- 同一个词跨批次导入时复用全局词条，只新增批次关联记录。
 
 ### v0.4：LLM 设置与单场景生成
 
 目标：
 
-- 从一个词汇批次生成一个高质量场景预览。
+- 从一本单词书或今日词队列生成一个高质量场景预览。
 
 任务：
 
 - 新增 LLM 设置页。
 - 支持 OpenAI-compatible 配置。
-- 保存 API Key、base URL、model。
+- 保存 base URL、model，并用本地凭据管理器或明确标注的临时方案保存 API Key。
 - 测试连接。
-- 选择一个词汇批次生成场景。
+- 选择一本单词书或今日词队列生成场景。
+- 使用固定 `prompt_version` 和 JSON schema 约束模型输出。
 - 展示覆盖率。
 - 支持重新生成。
 - 保存生成结果。
@@ -786,6 +888,7 @@ submit_dictation_answer
 - 能用 6 到 12 个词生成一个自然场景。
 - 能看到哪些词被覆盖。
 - 生成失败时有清楚错误提示。
+- 生成结果能通过 JSON 结构校验，能记录输入词汇快照、模型参数和失败原因。
 
 ### v0.5：场景转课程
 
@@ -917,7 +1020,7 @@ C:\Users\Administrator\Documents\Codex\2026-04-26\new-chat\momolite\docs\MomoLit
 4. 怎么验证
 5. 我作为小白应该学到什么
 
-当前目标是实现 v0.3：词汇导入与基础词汇库。
+当前目标是实现 v0.3：单词书导入与基础词汇库。
 请先让我提供一个真实背单词 app 导出样例，然后基于样例设计 parser、数据库和 UI。
 ```
 
@@ -937,11 +1040,12 @@ C:\Users\Administrator\Documents\Codex\2026-04-26\new-chat\momolite\docs\MomoLit
 不能破坏已有课程、课时、句子数据。
 必须支持 Tauri 桌面运行。
 先预览再写数据库。
+同一个词跨批次导入时要复用全局词条，不要把复习历史拆散。
 
 验收：
 npm build 通过。
 Rust 测试通过。
-桌面软件能看到导入的词汇批次。
+桌面软件能看到导入的单词书，并能进行无痛背词卡片复习。
 ```
 
 ## 21. 新对话的首要任务
@@ -952,10 +1056,10 @@ Rust 测试通过。
 2. 读取项目代码结构。
 3. 确认当前 git 状态。
 4. 让用户提供真实背单词 app 导出样例。
-5. 基于样例设计 v0.3 的词汇导入。
+5. 基于样例设计 v0.3 的单词书导入。
 6. 先做数据库 migration 和后端命令。
 7. 再做前端导入预览 UI。
-8. 最后做基础词汇批次详情和单词卡片。
+8. 最后做单词书详情和无痛背词卡片。
 
 不要优先做：
 
@@ -995,7 +1099,7 @@ MomoLite 是本地 Windows 桌面英语学习软件，技术栈是 Tauri + React
 
 当前数据库：
 C:\Users\Administrator\AppData\Roaming\cn.local.momolite\momolite.sqlite
-最近观察到 8 个课程、52 个课时、444 条句子、1 条学习记录。
+最近观察到 8 个课程、52 个课时、444 条句子、2 条学习记录。
 
 用户新愿景：
 从背单词 app 导出当天或近期背过的词，导入 MomoLite，然后用 LLM 生成高质量母语者日常场景对话，再形成沉浸式复习页和可训练课程。训练模式包括中译英、听力听写、跟读、错词错句复习。目标是增强口语、听力和阅读，让英语逐渐成为第二语言。
@@ -1005,15 +1109,21 @@ C:\Users\Administrator\.codex\skills\spoken-english-builder\SKILL.md
 它定义了从词汇生成自然日常对话、沉浸式复习 Markdown、听写导入流和覆盖率检查的规则。
 
 下一阶段目标：
-实现 v0.3：词汇导入与基础词汇库。
+实现 v0.3：单词书导入与基础词汇库。
 
 请先不要写代码，先快速摸清项目结构并让我提供一个真实背单词 app 导出样例。拿到样例后，再设计：
 1. parser
 2. SQLite 新表
 3. Tauri commands
 4. 前端导入预览
-5. 词汇批次详情
-6. 基础单词卡片复习
+5. 单词书详情
+6. 无痛背词卡片复习
+
+v0.3 数据模型要注意：
+不要把 `book_id` 直接放在 `vocabulary_items` 里作为唯一归属。请使用全局 `vocabulary_items` 加 `vocabulary_book_items` 关联表，保证同一个词出现在多本书或多次导入时不会拆散复习历史。
+
+v0.4 预留方向：
+LLM 生成要使用固定 `prompt_version` 和 JSON schema，保存输入词汇快照、模型参数、覆盖率、失败原因；API Key 优先使用本地凭据管理器保存。
 
 每一步都要边做边教我：
 为什么这么做、改了哪些文件、如何验证、我应该学到什么开发思维。
