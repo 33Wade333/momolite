@@ -1405,6 +1405,7 @@ function App() {
     100,
     Math.round((todayStats.reviewCount / Math.max(1, todayTarget)) * 100),
   );
+  const remainingTodaySentences = Math.max(0, todayTarget - todayStats.reviewCount);
   const nextCourse =
     courseSummaries.find((summary) => summary.course.id === lastStudy?.coursePackId) ??
     courseSummaries.find((summary) => summary.dueCount > 0) ??
@@ -2696,18 +2697,18 @@ function App() {
 
         {view === "home" && (
           <section className="home-page">
-            <section className="home-hero">
+            <section className="home-hero mission-hero">
               <div className="hero-copy">
                 <div className="eyebrow">
                   <Sparkles size={16} />
-                  今日训练
+                  今日任务中心
                 </div>
-                <h2>先认得单词，再把它放进真实英文。</h2>
+                <h2>今天先拿下词，再把它变成能听能说的英文。</h2>
                 <p>
                   {dueVocabularyCount
-                    ? `今日有 ${dueVocabularyCount} 个单词可以轻复习。`
+                    ? `今日有 ${dueVocabularyCount} 个单词在队列里，完成后就能继续生成场景课。`
                     : nextCourse
-                      ? `下一组：${nextCourse.course.name}`
+                      ? `下一步建议继续「${nextCourse.course.name}」，还差 ${remainingTodaySentences} 句到今日目标。`
                       : "先导入一本单词书，或创建一个课程包。"}
                 </p>
                 <div className="hero-actions">
@@ -2732,7 +2733,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="goal-card">
+              <div className="goal-card mission-goal">
                 <div
                   className="goal-ring"
                   style={{ "--progress": `${todayPercent}%` } as React.CSSProperties}
@@ -2744,58 +2745,85 @@ function App() {
                   <span>
                     {todayStats.reviewCount}/{todayTarget} 句
                   </span>
+                  <em>还差 {remainingTodaySentences} 句</em>
                 </div>
               </div>
             </section>
 
-            <div className="metric-grid">
-              <Metric icon={Target} label="今日句子" value={todayStats.reviewCount} />
-              <Metric icon={BookOpen} label="单词书" value={vocabularyBooks.length} />
-              <Metric icon={ListChecks} label="待学句" value={dueCount} />
-              <Metric icon={Sparkles} label="场景课" value={generatedScenes.length} accent />
-            </div>
+            <section className="mission-board">
+              <button
+                className="mission-card primary-mission"
+                disabled={!dueVocabularyCount}
+                onClick={openWordStudy}
+                type="button"
+              >
+                <span className="mission-icon"><Target size={20} /></span>
+                <span>
+                  <strong>今日背词</strong>
+                  <em>{dueVocabularyCount ? `${dueVocabularyCount} 个词待复习` : "队列已清空"}</em>
+                </span>
+                <ChevronRight size={18} />
+              </button>
+              <button
+                className="mission-card"
+                onClick={() => (nextCourse ? openStudy(nextCourse.course.id) : openView("courses"))}
+                type="button"
+              >
+                <span className="mission-icon"><BookOpen size={20} /></span>
+                <span>
+                  <strong>句子训练</strong>
+                  <em>{dueCount} 句待学，目标还差 {remainingTodaySentences} 句</em>
+                </span>
+                <ChevronRight size={18} />
+              </button>
+              <button
+                className="mission-card"
+                onClick={() => openView("scenes")}
+                type="button"
+              >
+                <span className="mission-icon"><Sparkles size={20} /></span>
+                <span>
+                  <strong>生成场景课</strong>
+                  <em>{generatedScenes.length} 节草稿，把词放进对话</em>
+                </span>
+                <ChevronRight size={18} />
+              </button>
+            </section>
 
-            <section className="dashboard-grid">
-              <Surface title="今日学习计划">
-                <div className="home-plan">
-                  <div className="home-plan-main">
-                    <span className="soft-badge accent">
-                      {learningPlanSettings.intensity === "light"
-                        ? "浅学"
-                        : learningPlanSettings.intensity === "intensive"
-                          ? "高强度"
-                          : "标准"}
-                    </span>
-                    <h3>
-                      新词 {dailyLearningPlan.newWordTarget} · 复习{" "}
-                      {dailyLearningPlan.dueCount} · 场景课{" "}
-                      {dailyLearningPlan.sceneLessonTarget}
-                    </h3>
-                    <p>{dailyLearningPlan.explanation}</p>
+            <section className="dashboard-grid home-dashboard">
+              <Surface className="quest-panel" title="今日学习计划">
+                <div className="quest-header">
+                  <span className="soft-badge accent">
+                    {learningPlanSettings.intensity === "light"
+                      ? "浅学模式"
+                      : learningPlanSettings.intensity === "intensive"
+                        ? "高强度模式"
+                        : "标准模式"}
+                  </span>
+                  <strong>
+                    新词 {dailyLearningPlan.newWordTarget} · 复习 {dailyLearningPlan.dueCount} · 场景课{" "}
+                    {dailyLearningPlan.sceneLessonTarget}
+                  </strong>
+                </div>
+                <ProgressBar value={todayPercent} />
+                <p>{dailyLearningPlan.explanation || "先背词，再进句子和场景课，今天只推进一小步。"}</p>
+                <div className="reward-strip">
+                  <div>
+                    <Flame size={18} />
+                    <span>连续 {streakDays} 天</span>
                   </div>
-                  <div className="home-plan-actions">
-                    <button
-                      className="primary-button"
-                      disabled={!dueVocabularyCount}
-                      onClick={openWordStudy}
-                      type="button"
-                    >
-                      <Play size={17} />
-                      专注背词
-                    </button>
-                    <button
-                      className="ghost-button"
-                      onClick={() => openView("scenes")}
-                      type="button"
-                    >
-                      <Sparkles size={17} />
-                      生成场景课
-                    </button>
+                  <div>
+                    <ListChecks size={18} />
+                    <span>{dueCount} 句待学</span>
+                  </div>
+                  <div>
+                    <Trophy size={18} />
+                    <span>{weakVocabularyCount} 个弱词</span>
                   </div>
                 </div>
               </Surface>
 
-              <Surface title="记忆与内容">
+              <Surface className="content-health-panel" title="内容库存">
                 <div className="mini-stat-grid">
                   <div>
                     <span>全局词条</span>
@@ -2806,12 +2834,12 @@ function App() {
                     <strong>{dueVocabularyCount}</strong>
                   </div>
                   <div>
-                    <span>弱词</span>
-                    <strong>{weakVocabularyCount}</strong>
+                    <span>单词书</span>
+                    <strong>{vocabularyBooks.length}</strong>
                   </div>
                   <div>
-                    <span>复习债</span>
-                    <strong>{dailyLearningPlan.backlogCount}</strong>
+                    <span>场景课</span>
+                    <strong>{generatedScenes.length}</strong>
                   </div>
                 </div>
               </Surface>
@@ -2936,6 +2964,28 @@ function App() {
                 {showWordBookImport ? "收起导入" : "新建/导入词书"}
               </button>
             </div>
+
+            <section className="vocabulary-scoreboard">
+              <div className="score-card word-score-card">
+                <span>今日背词队列</span>
+                <strong>{dueVocabularyCount}</strong>
+                <em>{dueVocabularyCount ? "进入专注模式，一次只看一个词" : "今日队列已完成"}</em>
+              </div>
+              <div className="score-card">
+                <span>全局词库</span>
+                <strong>{vocabularyItems.length}</strong>
+                <em>{weakVocabularyCount} 个弱词会优先进入场景课</em>
+              </div>
+              <div className="score-card">
+                <span>当前词书进度</span>
+                <strong>
+                  {activeVocabularyBook
+                    ? `${activeBookReviewedCount}/${activeVocabularyBook.items.length}`
+                    : "0/0"}
+                </strong>
+                <em>{activeVocabularyBook?.book.name ?? "选择一本词书查看详情"}</em>
+              </div>
+            </section>
 
             <section className="library-shell">
               <Surface className="library-sidebar-panel" title="词书">
@@ -3066,6 +3116,31 @@ function App() {
                   </div>
                 ) : activeVocabularyBook ? (
                   <div className="book-detail-view">
+                    <section className="book-hero">
+                      <div>
+                        <span className="soft-badge">单词书</span>
+                        <h2>{activeVocabularyBook.book.name}</h2>
+                        <p>
+                          {activeVocabularyBook.items.length} 个词 · 已复习 {activeBookReviewedCount} · 弱词{" "}
+                          {activeBookWeakCount}
+                        </p>
+                      </div>
+                      <button
+                        className="primary-button large"
+                        disabled={!dueVocabularyCount}
+                        onClick={openWordStudy}
+                        type="button"
+                      >
+                        <Play size={18} />
+                        进入专注背词
+                      </button>
+                    </section>
+                    <ProgressBar
+                      value={Math.round(
+                        (activeBookReviewedCount / Math.max(1, activeVocabularyBook.items.length)) *
+                          100,
+                      )}
+                    />
                     <div className="book-summary-strip">
                       <div>
                         <span>词条</span>
@@ -3079,15 +3154,10 @@ function App() {
                         <span>弱项</span>
                         <strong>{activeBookWeakCount}</strong>
                       </div>
-                      <button
-                        className="primary-button"
-                        disabled={!dueVocabularyCount}
-                        onClick={openWordStudy}
-                        type="button"
-                      >
-                        <Play size={17} />
-                        开始复习
-                      </button>
+                      <div>
+                        <span>今日队列</span>
+                        <strong>{dueVocabularyCount}</strong>
+                      </div>
                     </div>
                     <VocabularyList items={activeVocabularyBook.items} />
                   </div>
@@ -3117,7 +3187,15 @@ function App() {
                   >
                     <X size={24} />
                   </button>
-                  <div>{Math.min(wordCardIndex + 1, vocabularyQueue.length)}/{vocabularyQueue.length}</div>
+                  <div className="word-focus-progress">
+                    <strong>专注背词</strong>
+                    <span>{Math.min(wordCardIndex + 1, vocabularyQueue.length)}/{vocabularyQueue.length}</span>
+                    <ProgressBar
+                      value={Math.round(
+                        ((wordCardIndex + 1) / Math.max(1, vocabularyQueue.length)) * 100,
+                      )}
+                    />
+                  </div>
                   <button
                     className="icon-button"
                     onClick={() => setWordCardRevealed((value) => !value)}
@@ -3178,6 +3256,7 @@ function App() {
                     type="button"
                   >
                     忘记
+                    <span>稍后再来</span>
                   </button>
                   <button
                     className="rating-button warn"
@@ -3185,6 +3264,7 @@ function App() {
                     type="button"
                   >
                     模糊
+                    <span>需要提醒</span>
                   </button>
                   <button
                     className="rating-button primary"
@@ -3192,6 +3272,7 @@ function App() {
                     type="button"
                   >
                     认识
+                    <span>进入复习</span>
                   </button>
                   <button
                     className="rating-button success"
@@ -3199,6 +3280,7 @@ function App() {
                     type="button"
                   >
                     熟悉
+                    <span>延后出现</span>
                   </button>
                 </footer>
               </>
@@ -3224,6 +3306,29 @@ function App() {
 
         {view === "scenes" && (
           <section className="scenes-page">
+            <section className="scene-pipeline">
+              <div className="pipeline-step active">
+                <span>1</span>
+                <strong>规划</strong>
+                <em>选词与主题</em>
+              </div>
+              <div className={`pipeline-step ${sceneBatchPlan ? "active" : ""}`}>
+                <span>2</span>
+                <strong>生成</strong>
+                <em>{sceneBatchPlan?.batch.plannedSceneCount ?? 0} 节候选课</em>
+              </div>
+              <div className={`pipeline-step ${activeScene ? "active" : ""}`}>
+                <span>3</span>
+                <strong>阅读</strong>
+                <em>高亮目标词</em>
+              </div>
+              <div className="pipeline-step">
+                <span>4</span>
+                <strong>入课</strong>
+                <em>进入训练</em>
+              </div>
+            </section>
+
             <section className="scene-workbench">
               <Surface
                 className="scene-planner"
@@ -3258,7 +3363,7 @@ function App() {
                   <div className="scene-command-stack">
                     <button className="ghost-button" onClick={planSceneBatch} type="button">
                       <ListChecks size={17} />
-                      规划
+                      规划课表
                     </button>
                     <button
                       className="primary-button"
@@ -3267,7 +3372,7 @@ function App() {
                       type="button"
                     >
                       <Sparkles size={17} />
-                      生成
+                      生成草稿
                     </button>
                     <button
                       className="ghost-button"
@@ -3275,7 +3380,7 @@ function App() {
                       type="button"
                     >
                       <Plus size={17} />
-                      入课
+                      加入课程
                     </button>
                   </div>
                 </div>
@@ -3479,6 +3584,13 @@ function App() {
 
         {view === "settings" && (
           <section className="settings-page">
+            <section className="settings-intro">
+              <div>
+                <span className="soft-badge">系统能力</span>
+                <h2>把同步、模型和语音放在这里，学习时不被打扰。</h2>
+                <p>日常学习只看任务页；需要调整外部服务时再进入设置。</p>
+              </div>
+            </section>
             <div className="settings-grid">
               <Surface title="坚果云 WebDAV 同步">
                 <form className="settings-form" onSubmit={saveSyncConfig}>
@@ -3759,7 +3871,12 @@ function App() {
 
         {view === "courses" && (
           <section className="courses-page">
-            <Surface title="新建课程包">
+            <section className="course-library-hero">
+              <div>
+                <span className="soft-badge accent">课程库</span>
+                <h2>把句子按课程收好，每次只推进一小节。</h2>
+                <p>{state.coursePacks.length} 个课程包 · {state.sentences.length} 句 · {dueCount} 句待学</p>
+              </div>
               <form className="create-course-form" onSubmit={createCourse}>
                 <input
                   onChange={(event) => setCourseName(event.target.value)}
@@ -3768,11 +3885,10 @@ function App() {
                 />
                 <button className="primary-button" type="submit">
                   <Plus size={17} />
-                  新建
+                  新建课程
                 </button>
               </form>
-            </Surface>
-
+            </section>
             <div className="course-grid">
               {courseSummaries.length ? (
                 courseSummaries.map((summary) => (
@@ -4198,6 +4314,18 @@ function App() {
 
         {view === "stats" && (
           <section className="stats-page">
+            <section className="stats-hero">
+              <div>
+                <span className="soft-badge accent">学习表现</span>
+                <h2>看趋势，不看压力。</h2>
+                <p>统计页只回答：你坚持了多久、完成了多少、哪里还薄弱。</p>
+              </div>
+              <div className="streak-badge">
+                <Flame size={22} />
+                <strong>{streakDays}</strong>
+                <span>连续天数</span>
+              </div>
+            </section>
             <div className="metric-grid">
               <Metric icon={Target} label="今日完成" value={todayStats.reviewCount} />
               <Metric icon={BookOpen} label="课程包" value={state.coursePacks.length} />
