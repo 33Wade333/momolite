@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,6 +50,19 @@ pub struct SentenceItem {
     created_at: String,
     #[serde(default)]
     updated_at: Option<String>,
+    #[serde(default)]
+    linked_vocabulary: Vec<SentenceVocabularyLink>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SentenceVocabularyLink {
+    vocabulary_item_id: String,
+    text: String,
+    primary_meaning: String,
+    part_of_speech: String,
+    difficulty: String,
+    matched_text: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -519,6 +532,7 @@ fn apply_memory_rating(
     next.retrievability = retrievability_before;
 
     let success = matches!(rating, "good" | "easy");
+    let is_new_memory = current.stability <= 0.0 || current.last_reviewed_at.is_none();
     let base_stability = if current.stability <= 0.0 {
         match rating {
             "again" => 10.0 / 1440.0,
@@ -548,21 +562,31 @@ fn apply_memory_rating(
         }
         "good" => {
             next.state = "review".to_string();
-            let growth = 1.0 + (11.0 - current.difficulty).max(1.0) * 0.18;
+            let growth = if is_new_memory {
+                1.0
+            } else {
+                let recall_bonus = (1.0 + retrievability_before).clamp(1.0, 1.9);
+                1.0 + (11.0 - current.difficulty).max(1.0) * 0.14 * recall_bonus
+            };
             next.stability = base_stability.max(2.0) * growth;
             next.difficulty = (current.difficulty - 0.15).max(1.0);
-            next.interval_days = next.stability.max(2.0);
+            next.interval_days = next.stability.max(3.0);
         }
         "easy" => {
-            next.state = if current.review_count_hint() >= 2 {
+            next.state = if !is_new_memory && next.stability >= 21.0 {
                 "mastered".to_string()
             } else {
                 "review".to_string()
             };
-            let growth = 1.45 + (11.0 - current.difficulty).max(1.0) * 0.22;
+            let growth = if is_new_memory {
+                1.0
+            } else {
+                let recall_bonus = (1.0 + retrievability_before).clamp(1.0, 1.95);
+                1.3 + (11.0 - current.difficulty).max(1.0) * 0.16 * recall_bonus
+            };
             next.stability = base_stability.max(4.0) * growth;
             next.difficulty = (current.difficulty - 0.35).max(1.0);
-            next.interval_days = next.stability.max(5.0);
+            next.interval_days = next.stability.max(7.0);
         }
         _ => return Err("invalid vocabulary rating".to_string()),
     }
@@ -574,16 +598,6 @@ fn apply_memory_rating(
     next.due_at = Some(add_days_iso(reviewed_at, next.interval_days));
     next.last_reviewed_at = Some(reviewed_at.to_string());
     Ok(next)
-}
-
-impl VocabularyMemoryState {
-    fn review_count_hint(&self) -> i64 {
-        if self.last_reviewed_at.is_some() {
-            1 + self.lapse_count
-        } else {
-            0
-        }
-    }
 }
 
 fn save_memory_state(connection: &Connection, state: &VocabularyMemoryState) -> Result<(), String> {
@@ -1440,6 +1454,68 @@ pub fn init_database(app: AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+fn attach_sentence_vocabulary_links(
+    connection: &Connection,
+    sentences: &mut [SentenceItem],
+) -> Result<(), String> {
+    if sentences.is_empty() {
+        return Ok(());
+    }
+
+    let sentence_ids = sentences
+        .iter()
+        .map(|sentence| sentence.id.clone())
+        .collect::<HashSet<_>>();
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                svl.sentence_id,
+                svl.vocabulary_item_id,
+                v.text,
+                v.primary_meaning,
+                v.part_of_speech,
+                v.difficulty,
+                svl.matched_text
+            FROM sentence_vocabulary_links svl
+            JOIN vocabulary_items v ON v.id = svl.vocabulary_item_id
+            ORDER BY svl.created_at ASC
+            ",
+        )
+        .map_err(|error| format!("failed to prepare sentence vocabulary link query: {error}"))?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SentenceVocabularyLink {
+                    vocabulary_item_id: row.get(1)?,
+                    text: row.get(2)?,
+                    primary_meaning: row.get(3)?,
+                    part_of_speech: row.get(4)?,
+                    difficulty: row.get(5)?,
+                    matched_text: row.get(6)?,
+                },
+            ))
+        })
+        .map_err(|error| format!("failed to query sentence vocabulary links: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to collect sentence vocabulary links: {error}"))?;
+
+    let mut grouped: HashMap<String, Vec<SentenceVocabularyLink>> = HashMap::new();
+    for (sentence_id, link) in rows {
+        if sentence_ids.contains(&sentence_id) {
+            grouped.entry(sentence_id).or_default().push(link);
+        }
+    }
+
+    for sentence in sentences {
+        sentence.linked_vocabulary = grouped.remove(&sentence.id).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn load_app_state(app: AppHandle) -> Result<AppState, String> {
     let connection = open_database(&app)?;
@@ -1513,11 +1589,14 @@ pub fn load_app_state(app: AppHandle) -> Result<AppState, String> {
                 next_review_at: row.get(12)?,
                 created_at: row.get(13)?,
                 updated_at: row.get(14)?,
+                linked_vocabulary: Vec::new(),
             })
         })
         .map_err(|error| format!("failed to query sentences: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("failed to collect sentences: {error}"))?;
+    let mut sentences = sentences;
+    attach_sentence_vocabulary_links(&connection, &mut sentences)?;
 
     let mut review_statement = connection
         .prepare(
@@ -1788,11 +1867,14 @@ pub fn list_sentences(app: AppHandle, course_pack_id: String) -> Result<Vec<Sent
                 next_review_at: row.get(12)?,
                 created_at: row.get(13)?,
                 updated_at: row.get(14)?,
+                linked_vocabulary: Vec::new(),
             })
         })
         .map_err(|error| format!("failed to query sentence list: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("failed to collect sentence list: {error}"))?;
+    let mut sentences = sentences;
+    attach_sentence_vocabulary_links(&connection, &mut sentences)?;
 
     Ok(sentences)
 }
@@ -2760,9 +2842,10 @@ pub fn get_today_learning_plan(app: AppHandle, plan_date: String) -> Result<Dail
 #[cfg(test)]
 mod tests {
     use super::{
-        create_schema, delete_course_pack_on_connection, delete_sentence_on_connection,
-        merge_duplicate_lessons, normalize_vocabulary_text, parse_vocabulary_book_markdown,
-        record_review_on_connection, table_has_column, ReviewSubmission,
+        apply_memory_rating, create_schema, days_between, delete_course_pack_on_connection,
+        delete_sentence_on_connection, initial_memory_state, merge_duplicate_lessons,
+        normalize_vocabulary_text, parse_vocabulary_book_markdown, record_review_on_connection,
+        table_has_column, ReviewSubmission,
     };
     use rusqlite::{params, Connection};
 
@@ -2828,6 +2911,30 @@ mod tests {
         assert_eq!(entries[0].primary_meaning, "放弃；抛弃");
         assert_eq!(entries[0].synonyms, "give up, quit");
         assert_eq!(normalize_vocabulary_text("  Abandon!  "), "abandon");
+    }
+
+    #[test]
+    fn vocabulary_memory_first_review_intervals_are_predictable() {
+        let reviewed_at = "2026-04-29T08:00:00+00:00";
+        let ratings = [
+            ("again", 10.0 / 1440.0, "relearning"),
+            ("hard", 1.0, "learning"),
+            ("good", 3.0, "review"),
+            ("easy", 7.0, "review"),
+        ];
+
+        for (rating, expected_days, expected_state) in ratings {
+            let before = initial_memory_state("vocab_1", "recognition");
+            let after = apply_memory_rating(&before, rating, reviewed_at)
+                .expect("apply memory rating");
+            let due_at = after.due_at.as_deref().expect("due at");
+            let actual_days = days_between(reviewed_at, due_at);
+            assert!(
+                (actual_days - expected_days).abs() < 0.001,
+                "{rating} expected {expected_days} days, got {actual_days}"
+            );
+            assert_eq!(after.state, expected_state);
+        }
     }
 
     #[test]

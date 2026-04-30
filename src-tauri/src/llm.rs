@@ -1176,7 +1176,7 @@ fn build_enrich_prompt(words: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        r#"Enrich these English vocabulary items for MomoLite.
+        r#"Enrich these English vocabulary items for MomoLite, a Chinese learner's focused vocabulary trainer.
 
 Input words:
 {word_lines}
@@ -1184,8 +1184,15 @@ Input words:
 Rules:
 - Keep one entry for every input word.
 - Use accurate Chinese meanings for Chinese learners.
-- Prefer modern everyday examples.
-- Keep examples natural and useful for speaking/listening practice.
+- Prefer modern everyday English and avoid stiff textbook sentences.
+- Generate at least 2 natural example sentences for each word, especially speaking/listening scenarios.
+- Include common collocations, a short confusion note when useful, and a practical usage tip.
+- Include speaking/listening scenario tags such as commute, shopping, work, appointment, family, study, travel, small-talk.
+- Keep the JSON schema unchanged. Fold extra learning help into existing fields:
+  - Put the strongest example first in "example"; if there is room, append a second short example separated by " / ".
+  - Put matching Chinese translations in "exampleCn" using the same order.
+  - Put image memory, collocations, confusion note, and usage tip together in "memoryHint".
+  - Put scenario tags and topic tags in "tags".
 - Return valid JSON only.
 
 JSON schema:
@@ -1196,14 +1203,14 @@ JSON schema:
       "primaryMeaning": "中文释义",
       "phonetic": "/phonetic/",
       "partOfSpeech": "noun/verb/...",
-      "example": "A natural English example sentence.",
-      "exampleCn": "自然中文翻译。",
+      "example": "Example 1. / Example 2.",
+      "exampleCn": "例句 1 中文。 / 例句 2 中文。",
       "roots": "词根词缀说明；没有则留空",
       "wordFamily": "related forms",
       "synonyms": "synonyms",
       "antonyms": "antonyms",
-      "memoryHint": "形象记忆",
-      "tags": "daily, work, study",
+      "memoryHint": "形象记忆；常见搭配；易混提醒；使用提示",
+      "tags": "daily, work, commute, speaking",
       "difficulty": "A1/A2/B1/B2/C1/C2"
     }}
   ]

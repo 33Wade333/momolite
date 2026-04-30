@@ -42,16 +42,19 @@ import "./App.css";
 type View =
   | "home"
   | "vocabulary"
+  | "vocabularyImport"
   | "wordStudy"
   | "scenes"
   | "courses"
   | "courseDetail"
+  | "courseReading"
   | "study"
   | "stats"
   | "settings";
 type SentenceStatus = "new" | "learning" | "mastered";
 type Rating = "again" | "hard" | "good" | "easy";
 type AnswerResult = "idle" | "correct" | "wrong";
+type WordInfoTab = "example" | "meaning" | "roots" | "relations" | "memory";
 
 interface CoursePack {
   id: string;
@@ -76,6 +79,16 @@ interface SentenceItem {
   errorCount: number;
   nextReviewAt: string | null;
   createdAt: string;
+  linkedVocabulary?: SentenceVocabularyLink[];
+}
+
+interface SentenceVocabularyLink {
+  vocabularyItemId: string;
+  text: string;
+  primaryMeaning: string;
+  partOfSpeech: string;
+  difficulty: string;
+  matchedText: string;
 }
 
 interface ReviewLog {
@@ -397,6 +410,29 @@ interface StudyQueueItem {
   isCurrent: boolean;
 }
 
+interface ReadingStory {
+  title: string;
+  index: number;
+  sentences: SentenceItem[];
+  targetWords: ReadingTargetWord[];
+}
+
+interface ReadingVocabularyIndexItem {
+  item: ReadingTargetWord;
+  storyIndexes: number[];
+}
+
+interface ReadingTargetWord {
+  id: string;
+  text: string;
+  primaryMeaning: string;
+  partOfSpeech: string;
+  difficulty: string;
+  tags: string;
+  matchedTexts: string[];
+  source: "linked" | "matched";
+}
+
 interface StudyBookmark {
   coursePackId: string;
   sentenceId: string | null;
@@ -425,9 +461,11 @@ const WORD_BOOK_SAMPLE = `# CET4 核心词汇 Week 1
 
 const viewCopy: Record<View, { title: string; subtitle: string }> = {
   home: { title: "首页", subtitle: "今天继续一小步，英语句子更顺一点。" },
-  vocabulary: { title: "单词书", subtitle: "管理词书和词条；背词时进入专注模式。" },
+  vocabulary: { title: "单词书", subtitle: "管理词书和词条；日常背词由系统自动排队。" },
+  vocabularyImport: { title: "导入词书", subtitle: "只给单词让 LLM 补全，或粘贴完整 Markdown 词书。" },
   wordStudy: { title: "背单词", subtitle: "专注复习当前队列。" },
   scenes: { title: "AI 场景", subtitle: "先规划场景课，再生成可阅读、可入课的草稿。" },
+  courseReading: { title: "沉浸复习", subtitle: "按 Story 文档阅读课程句子，边听边复习目标词。" },
   courses: { title: "课程包", subtitle: "整理你的句子材料和训练路径。" },
   courseDetail: { title: "课程详情", subtitle: "课时、导入和继续学习都在这里。" },
   study: { title: "中译英训练", subtitle: "看中文，听英文，补全原句。" },
@@ -439,6 +477,7 @@ const navItems: Array<{ view: View; label: string; icon: LucideIcon }> = [
   { view: "home", label: "首页", icon: Home },
   { view: "vocabulary", label: "单词书", icon: BookOpen },
   { view: "scenes", label: "AI 场景", icon: Sparkles },
+  { view: "courseReading", label: "沉浸复习", icon: Volume2 },
   { view: "courses", label: "课程包", icon: LibraryBig },
   { view: "stats", label: "统计", icon: BarChart3 },
   { view: "settings", label: "同步设置", icon: Menu },
@@ -529,19 +568,19 @@ const defaultDailyLearningPlan: DailyLearningPlan = {
 };
 
 const sceneTopicOptions = [
-  "commute and errands",
-  "work and project discussion",
-  "study and class",
-  "restaurant or cafe",
-  "shopping and payment",
-  "friends making plans",
-  "family daily talk",
-  "health and doctor",
-  "apartment repair",
-  "planning and decisions",
-  "conflict and apology",
-  "interview and networking",
-  "special daily scenario",
+  "通勤和办事",
+  "工作与项目讨论",
+  "学习和上课",
+  "餐厅或咖啡馆",
+  "购物与付款",
+  "朋友约计划",
+  "家庭日常对话",
+  "健康和看医生",
+  "公寓维修",
+  "计划与做决定",
+  "冲突和道歉",
+  "面试和社交",
+  "自定义日常场景",
 ];
 
 const llmProviderPresets: Record<
@@ -890,9 +929,139 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function highlightTargetWords(text: string, targets: SceneTargetWord[]) {
+function matchVocabularyInText(text: string, vocabularyItems: VocabularyItem[]) {
+  const lowerText = text.toLocaleLowerCase();
+  return vocabularyItems
+    .filter((item) => {
+      const target = item.text.trim();
+      if (target.length < 2) return false;
+      const escaped = escapeRegex(target.toLocaleLowerCase());
+      const boundary = /^[a-z][a-z\s-]*$/i.test(target)
+        ? new RegExp(`\\b${escaped}\\b`, "i")
+        : new RegExp(escaped, "i");
+      return boundary.test(lowerText);
+    })
+    .slice(0, 12);
+}
+
+function vocabularyItemToReadingTarget(
+  item: VocabularyItem,
+  matchedText = item.text,
+): ReadingTargetWord {
+  return {
+    id: item.id,
+    text: item.text,
+    primaryMeaning: item.primaryMeaning,
+    partOfSpeech: item.partOfSpeech,
+    difficulty: item.difficulty,
+    tags: item.tags,
+    matchedTexts: [matchedText || item.text],
+    source: "matched",
+  };
+}
+
+function linkedVocabularyToReadingTarget(link: SentenceVocabularyLink): ReadingTargetWord {
+  return {
+    id: link.vocabularyItemId || link.text,
+    text: link.text,
+    primaryMeaning: link.primaryMeaning,
+    partOfSpeech: link.partOfSpeech,
+    difficulty: link.difficulty,
+    tags: "",
+    matchedTexts: [link.matchedText || link.text],
+    source: "linked",
+  };
+}
+
+function mergeReadingTarget(
+  map: Map<string, ReadingTargetWord>,
+  target: ReadingTargetWord,
+) {
+  const key = target.id || target.text.toLocaleLowerCase();
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, {
+      ...target,
+      matchedTexts: [...new Set(target.matchedTexts.filter(Boolean))],
+    });
+    return;
+  }
+
+  existing.matchedTexts = [
+    ...new Set([...existing.matchedTexts, ...target.matchedTexts].filter(Boolean)),
+  ];
+  if (existing.source !== "linked" && target.source === "linked") {
+    existing.source = "linked";
+  }
+}
+
+function getSentenceReadingTargets(
+  sentence: SentenceItem,
+  vocabularyItems: VocabularyItem[],
+) {
+  const linked = (sentence.linkedVocabulary ?? [])
+    .map(linkedVocabularyToReadingTarget)
+    .filter((item) => item.text.trim());
+  if (linked.length) return linked;
+  return matchVocabularyInText(sentence.english, vocabularyItems).map((item) =>
+    vocabularyItemToReadingTarget(item),
+  );
+}
+
+function buildCourseReadingStories(
+  sentences: SentenceItem[],
+  vocabularyItems: VocabularyItem[],
+) {
+  const lessonOrder = new Map<string, SentenceItem[]>();
+  for (const sentence of sentences) {
+    const group = lessonOrder.get(sentence.lessonTitle) ?? [];
+    group.push(sentence);
+    lessonOrder.set(sentence.lessonTitle, group);
+  }
+
+  const stories: ReadingStory[] = [...lessonOrder.entries()].map(
+    ([title, groupSentences], index) => {
+      const targetMap = new Map<string, ReadingTargetWord>();
+      for (const sentence of groupSentences) {
+        for (const target of getSentenceReadingTargets(sentence, vocabularyItems)) {
+          mergeReadingTarget(targetMap, target);
+        }
+      }
+      return {
+        title,
+        index: index + 1,
+        sentences: groupSentences,
+        targetWords: [...targetMap.values()].slice(0, 20),
+      };
+    },
+  );
+
+  const wordMap = new Map<string, ReadingVocabularyIndexItem>();
+  for (const story of stories) {
+    for (const item of story.targetWords) {
+      const existing = wordMap.get(item.id) ?? {
+        item,
+        storyIndexes: [],
+      };
+      if (!existing.storyIndexes.includes(story.index)) {
+        existing.storyIndexes.push(story.index);
+      }
+      wordMap.set(item.id, existing);
+    }
+  }
+
+  return {
+    stories,
+    vocabularyIndex: [...wordMap.values()].sort(
+      (a, b) => a.storyIndexes[0] - b.storyIndexes[0] || a.item.text.localeCompare(b.item.text),
+    ),
+  };
+}
+
+function highlightVocabularyWords(text: string, targets: ReadingTargetWord[]) {
   const patterns = targets
-    .map((target) => target.text.trim())
+    .flatMap((target) => [target.text, ...target.matchedTexts])
+    .map((target) => target.trim())
     .filter((target) => target.length > 1)
     .sort((a, b) => b.length - a.length)
     .map(escapeRegex);
@@ -991,6 +1160,19 @@ function formatShortDate(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "时间未知";
   return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
+function vocabularySourceLabel(source: string) {
+  if (source === "llm_enriched_markdown") return "LLM 补全";
+  if (source === "markdown") return "Markdown";
+  return source || "本地";
+}
+
+function splitVocabularyTokens(value: string) {
+  return value
+    .split(/[,，;；、/]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
 }
 
 function addMinutesIso(minutes: number) {
@@ -1148,6 +1330,10 @@ function App() {
     "粘贴课程文本后，会在下方预览课时和句子。",
   );
   const [showImport, setShowImport] = useState(false);
+  const [showVocabularyImportModal, setShowVocabularyImportModal] = useState(false);
+  const [showVocabularyItemsModal, setShowVocabularyItemsModal] = useState(false);
+  const [showCreateCourseModal, setShowCreateCourseModal] = useState(false);
+  const [showAddSentenceModal, setShowAddSentenceModal] = useState(false);
   const [sessionIndex, setSessionIndex] = useState(0);
   const [showingAnswer, setShowingAnswer] = useState(false);
   const [answerWords, setAnswerWords] = useState<Record<number, string>>({});
@@ -1171,10 +1357,10 @@ function App() {
   const [wordBookMessage, setWordBookMessage] = useState(
     "粘贴 Markdown 单词书后，会在下方预览可导入词条。",
   );
-  const [showWordBookImport, setShowWordBookImport] = useState(false);
   const [wordImportMode, setWordImportMode] = useState<"markdown" | "plain">("markdown");
   const [wordCardIndex, setWordCardIndex] = useState(0);
   const [wordCardRevealed, setWordCardRevealed] = useState(false);
+  const [wordInfoTab, setWordInfoTab] = useState<WordInfoTab>("example");
   const [syncSettings, setSyncSettings] = useState<SyncSettings>(defaultSyncSettings);
   const [syncForm, setSyncForm] = useState<SyncSettings>(defaultSyncSettings);
   const [webdavPassword, setWebdavPassword] = useState("");
@@ -1199,16 +1385,21 @@ function App() {
   );
   const [generatedScenes, setGeneratedScenes] = useState<GeneratedScene[]>([]);
   const [activeScene, setActiveScene] = useState<GeneratedSceneDetail | null>(null);
-  const [sceneTopic, setSceneTopic] = useState("daily work and study");
+  const [sceneTopic, setSceneTopic] = useState("日常工作和学习");
   const [sceneTitle, setSceneTitle] = useState("");
   const [sceneBatchTitle, setSceneBatchTitle] = useState("今日 AI 场景课");
   const [selectedSceneTopics, setSelectedSceneTopics] = useState<string[]>(
     sceneTopicOptions.slice(0, 5),
   );
+  const [showSceneTopicPicker, setShowSceneTopicPicker] = useState(false);
+  const [showSceneWordPicker, setShowSceneWordPicker] = useState(false);
   const [showSceneAdvanced, setShowSceneAdvanced] = useState(false);
   const [sceneCoursePackId, setSceneCoursePackId] = useState("");
   const [sceneBatchPlan, setSceneBatchPlan] = useState<SceneBatchPlanResponse | null>(null);
   const [sceneMessage, setSceneMessage] = useState("默认智能选择新词、弱词，先规划多节场景课。");
+  const [selectedSceneWordIds, setSelectedSceneWordIds] = useState<string[]>([]);
+  const [readingLessonTitle, setReadingLessonTitle] = useState<string | null>(null);
+  const [showReadingChinese, setShowReadingChinese] = useState(true);
   const [lastStudy, setLastStudy] = useState<StudyBookmark | null>(() =>
     loadLastStudy(),
   );
@@ -1433,6 +1624,21 @@ function App() {
       })
       .slice(0, 15);
   }, [vocabularyItems, vocabularyQueue]);
+  const selectedSceneTargetWords = useMemo(() => {
+    const selected = sceneTargetWords.filter((item) => selectedSceneWordIds.includes(item.id));
+    return selected.length ? selected : sceneTargetWords.slice(0, Math.min(8, sceneTargetWords.length));
+  }, [sceneTargetWords, selectedSceneWordIds]);
+  const readingSentences = useMemo(
+    () =>
+      readingLessonTitle
+        ? activeSentences.filter((sentence) => sentence.lessonTitle === readingLessonTitle)
+        : activeSentences,
+    [activeSentences, readingLessonTitle],
+  );
+  const readingReview = useMemo(
+    () => buildCourseReadingStories(readingSentences, vocabularyItems),
+    [readingSentences, vocabularyItems],
+  );
   const activeSceneTargets = useMemo(
     () => parseSceneTargetWords(activeScene?.scene.targetWordsSnapshot ?? ""),
     [activeScene?.scene.targetWordsSnapshot],
@@ -1487,6 +1693,24 @@ function App() {
       speakEnglish(currentSentence.english);
     }
   }, [currentSentence?.id, view]);
+
+  useEffect(() => {
+    if (view === "wordStudy") {
+      setWordInfoTab("example");
+    }
+  }, [currentVocabularyItem?.id, view]);
+
+  useEffect(() => {
+    if (!sceneTargetWords.length) {
+      setSelectedSceneWordIds([]);
+      return;
+    }
+    setSelectedSceneWordIds((current) => {
+      const available = new Set(sceneTargetWords.map((item) => item.id));
+      const kept = current.filter((id) => available.has(id));
+      return kept.length ? kept : sceneTargetWords.slice(0, 8).map((item) => item.id);
+    });
+  }, [sceneTargetWords]);
 
   useEffect(() => {
     if (view !== "study" || !activeCourse || !currentSentence) return;
@@ -1569,11 +1793,21 @@ function App() {
     if (next === "vocabulary") {
       setWordCardRevealed(false);
     }
+    if (next !== "vocabularyImport") {
+      setShowVocabularyImportModal(false);
+    }
+  }
+
+  function openVocabularyImport(mode: "plain" | "markdown" = "plain") {
+    setWordImportMode(mode);
+    setShowVocabularyImportModal(true);
+    setView("vocabularyImport");
   }
 
   function openCourse(coursePackId: string) {
     updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
     setShowImport(false);
+    setShowAddSentenceModal(false);
     setSelectedLessonTitle(null);
     openView("courseDetail");
   }
@@ -1602,6 +1836,13 @@ function App() {
     resetAnswerState();
     setQueueCollapsed(true);
     setView("study");
+  }
+
+  function openCourseReading(coursePackId = activeCourse?.id, lessonTitle?: string | null) {
+    if (!coursePackId) return;
+    updateState((current) => ({ ...current, activeCoursePackId: coursePackId }));
+    setReadingLessonTitle(lessonTitle ?? null);
+    setView("courseReading");
   }
 
   async function persistCoursePack(coursePack: CoursePack) {
@@ -1701,6 +1942,7 @@ function App() {
       coursePacks: [coursePack, ...current.coursePacks],
     }));
     setCourseName("");
+    setShowCreateCourseModal(false);
     setShowImport(true);
     setSelectedLessonTitle(null);
     setView("courseDetail");
@@ -1815,6 +2057,7 @@ function App() {
       sentences: [...current.sentences, sentence],
     }));
     setSentenceDraft({ english: "", chinese: "", phonetic: "", note: "" });
+    setShowAddSentenceModal(false);
   }
 
   async function importSentences() {
@@ -1901,6 +2144,7 @@ function App() {
       setImportMessage(
         `已导入 ${sentences.length} 句，跳过 ${skipped} 条重复内容，识别 ${lessonTitles.length} 个课时。`,
       );
+      setShowImport(false);
       setDatabaseError("");
     } catch (error) {
       setDatabaseError(String(error));
@@ -1928,6 +2172,8 @@ function App() {
       setWordBookMessage(
         `已导入 ${result.importedCount} 个新词，复用 ${result.reusedCount} 个旧词，跳过 ${result.skippedCount} 个不完整词条。`,
       );
+      setShowVocabularyImportModal(false);
+      setView("vocabulary");
       setDatabaseError("");
     } catch (error) {
       setDatabaseError(String(error));
@@ -2210,6 +2456,8 @@ function App() {
       setVocabularyEnrichMessage(
         `已入库 ${result.importedCount} 个新词，复用 ${result.reusedCount} 个旧词。`,
       );
+      setShowVocabularyImportModal(false);
+      setView("vocabulary");
     } catch (error) {
       setVocabularyEnrichMessage(`入库失败：${String(error)}`);
       setDatabaseError(String(error));
@@ -2251,7 +2499,7 @@ function App() {
       setView("settings");
       return;
     }
-    const targetIds = sceneTargetWords.map((item) => item.id);
+    const targetIds = selectedSceneTargetWords.map((item) => item.id);
     if (!targetIds.length) {
       setSceneMessage("还没有可用于生成场景的单词，请先导入单词书。");
       return;
@@ -2266,7 +2514,7 @@ function App() {
             apiKey,
             title: sceneTitle,
             topic: sceneTopic,
-            vocabularyItemIds: targetIds,
+          vocabularyItemIds: targetIds,
           },
         },
       );
@@ -2289,7 +2537,7 @@ function App() {
           title: sceneBatchTitle,
           coursePackId: sceneCoursePackId || activeCourse?.id || null,
           selectedTopics: selectedSceneTopics,
-          coreWordIds: [],
+          coreWordIds: selectedSceneTargetWords.map((item) => item.id),
         },
       });
       setSceneBatchPlan(plan);
@@ -2316,7 +2564,7 @@ function App() {
         title: sceneBatchTitle,
         coursePackId: sceneCoursePackId || activeCourse?.id || null,
         selectedTopics: selectedSceneTopics,
-        coreWordIds: [],
+        coreWordIds: selectedSceneTargetWords.map((item) => item.id),
       },
     }));
     setSceneBatchPlan(plan);
@@ -2366,7 +2614,38 @@ function App() {
         safeInvoke<GeneratedScene[]>("list_generated_scenes"),
       ]);
       applyLoadedState(loadedState);
+      updateState((current) => ({ ...current, activeCoursePackId: targetCourseId }));
       setGeneratedScenes(scenes);
+      setReadingLessonTitle(null);
+      setView("courseReading");
+    } catch (error) {
+      setSceneMessage(`加入课程失败：${String(error)}`);
+      setDatabaseError(String(error));
+    }
+  }
+
+  async function addGeneratedSceneToCourse(scene: GeneratedScene) {
+    const targetCourseId = sceneCoursePackId || scene.plannedCoursePackId || activeCourse?.id;
+    if (!targetCourseId) {
+      setSceneMessage("请先在设置里选择要加入的课程。");
+      return;
+    }
+    try {
+      const result = await safeInvoke<AddScenesToCourseResponse>("add_scenes_to_course", {
+        request: { sceneIds: [scene.id], coursePackId: targetCourseId },
+      });
+      setSceneMessage(
+        `已加入课程：${result.createdLessons} 个课时，${result.createdSentences} 句。`,
+      );
+      const [loadedState, scenes] = await Promise.all([
+        safeInvoke<AppState>("load_app_state"),
+        safeInvoke<GeneratedScene[]>("list_generated_scenes"),
+      ]);
+      applyLoadedState(loadedState);
+      updateState((current) => ({ ...current, activeCoursePackId: targetCourseId }));
+      setGeneratedScenes(scenes);
+      setReadingLessonTitle(null);
+      setView("courseReading");
     } catch (error) {
       setSceneMessage(`加入课程失败：${String(error)}`);
       setDatabaseError(String(error));
@@ -2651,27 +2930,6 @@ function App() {
               <h1>{viewCopy[view].title}</h1>
               <p>{viewCopy[view].subtitle}</p>
             </div>
-            <div className="topbar-actions">
-              {activeCourse && (
-                <button
-                  className="ghost-button"
-                  onClick={() => openCourse(activeCourse.id)}
-                  type="button"
-                >
-                  <BookOpen size={17} />
-                  {activeCourse.name}
-                </button>
-              )}
-              <button
-                className="primary-button"
-                disabled={!activeCourse || activeDueCount === 0}
-                onClick={() => openStudy(activeCourse?.id)}
-                type="button"
-              >
-                <Play size={17} />
-                继续学习
-              </button>
-            </div>
           </header>
         )}
 
@@ -2750,6 +3008,22 @@ function App() {
               </div>
             </section>
 
+            <section className="learning-loop-strip">
+              {[
+                ["1", "导入词书", vocabularyBooks.length ? `${vocabularyBooks.length} 本` : "待开始"],
+                ["2", "背词记忆", dueVocabularyCount ? `${dueVocabularyCount} 词待学` : "队列清空"],
+                ["3", "选词生成场景", `${selectedSceneTargetWords.length} 个目标词`],
+                ["4", "加入课程", `${state.coursePacks.length} 个课程`],
+                ["5", "阅读/中译英", `${dueCount} 句待学`],
+              ].map(([step, title, meta]) => (
+                <div className="loop-step" key={step}>
+                  <span>{step}</span>
+                  <strong>{title}</strong>
+                  <em>{meta}</em>
+                </div>
+              ))}
+            </section>
+
             <section className="mission-board">
               <button
                 className="mission-card primary-mission"
@@ -2805,6 +3079,32 @@ function App() {
                     {dailyLearningPlan.sceneLessonTarget}
                   </strong>
                 </div>
+                <div className="intensity-plan">
+                  <span>学习强度</span>
+                  <div className="segmented">
+                    <button
+                      className={learningPlanSettings.intensity === "light" ? "active" : ""}
+                      onClick={() => saveLearningIntensity("light")}
+                      type="button"
+                    >
+                      浅学
+                    </button>
+                    <button
+                      className={learningPlanSettings.intensity === "standard" ? "active" : ""}
+                      onClick={() => saveLearningIntensity("standard")}
+                      type="button"
+                    >
+                      标准
+                    </button>
+                    <button
+                      className={learningPlanSettings.intensity === "intensive" ? "active" : ""}
+                      onClick={() => saveLearningIntensity("intensive")}
+                      type="button"
+                    >
+                      高强度
+                    </button>
+                  </div>
+                </div>
                 <ProgressBar value={todayPercent} />
                 <p>{dailyLearningPlan.explanation || "先背词，再进句子和场景课，今天只推进一小步。"}</p>
                 <div className="reward-strip">
@@ -2845,42 +3145,7 @@ function App() {
               </Surface>
             </section>
 
-            <section className="dashboard-grid">
-              <Surface
-                action={
-                  <button
-                    className="small-action"
-                    onClick={() => openView("courses")}
-                    type="button"
-                  >
-                    全部课程
-                    <ChevronRight size={16} />
-                  </button>
-                }
-                title="最近课程"
-              >
-                <div className="course-card-list">
-                  {courseSummaries.length ? (
-                    courseSummaries.slice(0, 4).map((summary) => (
-                      <CourseCard
-                        key={summary.course.id}
-                        onDelete={deleteCourse}
-                        onOpen={openCourse}
-                        onStudy={openStudy}
-                        summary={summary}
-                      />
-                    ))
-                  ) : (
-                    <EmptyState
-                      actionLabel="创建第一门课程"
-                      icon={LibraryBig}
-                      onAction={() => openView("courses")}
-                      title="还没有课程包"
-                    />
-                  )}
-                </div>
-              </Surface>
-
+            <section className="dashboard-grid compact-dashboard">
               <Surface title="继续学习">
                 {nextCourse ? (
                   <div className="continue-card">
@@ -2916,223 +3181,165 @@ function App() {
                   />
                 )}
               </Surface>
+
+              <Surface title="沉浸复习">
+                {nextCourse ? (
+                  <div className="continue-card quiet">
+                    <div className="badge-row">
+                      <span className="soft-badge">{nextCourse.course.name}</span>
+                      <span className="soft-badge accent">{nextCourse.lessonCount} 个 Story</span>
+                    </div>
+                    <h3>按完整课时阅读，不提前铺开句子。</h3>
+                    <p>进入后再选择课程和课时，逐句播放、对照中文、复习关键词。</p>
+                    <div className="continue-footer">
+                      <span>{state.sentences.length} 句已入库</span>
+                      <button
+                        className="primary-button"
+                        onClick={() => openCourseReading(nextCourse.course.id)}
+                        type="button"
+                      >
+                        <Volume2 size={16} />
+                        开始阅读
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState
+                    actionLabel="去 AI 场景"
+                    icon={Volume2}
+                    onAction={() => openView("scenes")}
+                    title="加入课程后再沉浸复习"
+                  />
+                )}
+              </Surface>
             </section>
           </section>
         )}
 
         {view === "vocabulary" && (
-          <section className="vocabulary-page library-page">
-            <div className="library-actions">
-              <div className="segmented">
-                <button
-                  className={learningPlanSettings.intensity === "light" ? "active" : ""}
-                  onClick={() => saveLearningIntensity("light")}
-                  type="button"
-                >
-                  浅学
-                </button>
-                <button
-                  className={learningPlanSettings.intensity === "standard" ? "active" : ""}
-                  onClick={() => saveLearningIntensity("standard")}
-                  type="button"
-                >
-                  标准
-                </button>
-                <button
-                  className={learningPlanSettings.intensity === "intensive" ? "active" : ""}
-                  onClick={() => saveLearningIntensity("intensive")}
-                  type="button"
-                >
-                  高强度
-                </button>
+          <section className="vocabulary-page wordbook-management-page">
+            <section className="wordbook-cover">
+              <div>
+                <div className="eyebrow">
+                  <BookOpen size={16} />
+                  词书管理
+                </div>
+                <h2>书架负责整理，背词交给今日智能队列。</h2>
+                <p>
+                  当前有 {vocabularyBooks.length} 本词书、{vocabularyItems.length} 个词条。
+                  系统会从所有词书里混合到期词、新词和弱词。
+                </p>
+                <div className="hero-actions">
+                  <button
+                    className="primary-button large"
+                    disabled={!dueVocabularyCount}
+                    onClick={openWordStudy}
+                    type="button"
+                  >
+                    <Play size={18} />
+                    开始背词
+                  </button>
+                  <button
+                    className="ghost-button large"
+                    onClick={() => openVocabularyImport("plain")}
+                    type="button"
+                  >
+                    <Import size={18} />
+                    导入词书
+                  </button>
+                </div>
               </div>
-              <button
-                className="primary-button"
-                disabled={!dueVocabularyCount}
-                onClick={openWordStudy}
-                type="button"
-              >
-                <Play size={17} />
-                专注背词
-              </button>
-              <button
-                className="ghost-button"
-                onClick={() => setShowWordBookImport((value) => !value)}
-                type="button"
-              >
-                <Import size={17} />
-                {showWordBookImport ? "收起导入" : "新建/导入词书"}
-              </button>
-            </div>
-
-            <section className="vocabulary-scoreboard">
-              <div className="score-card word-score-card">
-                <span>今日背词队列</span>
+              <div className="wordbook-command-card">
+                <span>今日队列</span>
                 <strong>{dueVocabularyCount}</strong>
-                <em>{dueVocabularyCount ? "进入专注模式，一次只看一个词" : "今日队列已完成"}</em>
-              </div>
-              <div className="score-card">
-                <span>全局词库</span>
-                <strong>{vocabularyItems.length}</strong>
-                <em>{weakVocabularyCount} 个弱词会优先进入场景课</em>
-              </div>
-              <div className="score-card">
-                <span>当前词书进度</span>
-                <strong>
-                  {activeVocabularyBook
-                    ? `${activeBookReviewedCount}/${activeVocabularyBook.items.length}`
-                    : "0/0"}
-                </strong>
-                <em>{activeVocabularyBook?.book.name ?? "选择一本词书查看详情"}</em>
+                <em>{weakVocabularyCount} 个弱词 · {dailyLearningPlan.newWordTarget} 个新词目标</em>
+                <ProgressBar value={Math.min(100, Math.round((dueVocabularyCount / Math.max(1, dailyLearningPlan.reviewLimit)) * 100))} />
+                <div className="memory-note">
+                  <CheckCircle2 size={15} />
+                  <span>识别和中译英分别记录稳定度、难度和可回忆率，到期词与弱词优先出现。</span>
+                </div>
               </div>
             </section>
 
-            <section className="library-shell">
-              <Surface className="library-sidebar-panel" title="词书">
-                <div className="wordbook-list library-list">
-                  {vocabularyBooks.length ? (
-                    vocabularyBooks.map((book) => (
-                      <button
-                        className={`wordbook-row ${
-                          activeVocabularyBook?.book.id === book.id ? "active" : ""
-                        }`}
-                        key={book.id}
-                        onClick={() => openVocabularyBook(book.id)}
-                        type="button"
-                      >
-                        <div>
-                          <div className="row-title">{book.name}</div>
-                          <div className="row-subtitle">
-                            {book.itemCount} 词 · {formatShortDate(book.importedAt)}
+            <section className="wordbook-shelf-shell">
+              <Surface
+                action={
+                  <button
+                    className="small-action"
+                    onClick={() => openVocabularyImport("markdown")}
+                    type="button"
+                  >
+                    完整导入
+                    <ChevronRight size={16} />
+                  </button>
+                }
+                className="wordbook-shelf-panel"
+                title="词书书架"
+              >
+                {vocabularyBooks.length ? (
+                  <div className="wordbook-shelf">
+                    {vocabularyBooks.map((book) => {
+                      const isActive = activeVocabularyBook?.book.id === book.id;
+                      const reviewedCount = isActive ? activeBookReviewedCount : 0;
+                      const weakCount = isActive ? activeBookWeakCount : 0;
+                      const progress = Math.round((reviewedCount / Math.max(1, book.itemCount)) * 100);
+                      return (
+                        <button
+                          className={`wordbook-card ${isActive ? "active" : ""}`}
+                          key={book.id}
+                          onClick={() => openVocabularyBook(book.id)}
+                          type="button"
+                        >
+                          <div className="wordbook-card-top">
+                            <span className="soft-badge">{vocabularySourceLabel(book.source)}</span>
+                            <ChevronRight size={16} />
                           </div>
-                        </div>
-                        <ChevronRight size={16} />
-                      </button>
-                    ))
-                  ) : (
-                    <EmptyState
-                      actionLabel="新建词书"
-                      icon={Import}
-                      onAction={() => setShowWordBookImport(true)}
-                      title="还没有单词书"
-                    />
-                  )}
-                </div>
+                          <h3>{book.name}</h3>
+                          <div className="wordbook-card-meta">
+                            <span>{book.itemCount} 词</span>
+                            <span>导入 {formatShortDate(book.importedAt)}</span>
+                          </div>
+                          <ProgressBar value={progress} />
+                          <div className="wordbook-card-stats">
+                            <span>已复习 {reviewedCount}</span>
+                            <span>弱词 {weakCount}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <EmptyState
+                    actionLabel="导入第一本词书"
+                    icon={Import}
+                    onAction={() => openVocabularyImport("plain")}
+                    title="还没有单词书"
+                  />
+                )}
               </Surface>
 
               <Surface
-                className="library-detail-panel"
+                className="wordbook-detail-panel"
                 title={activeVocabularyBook ? activeVocabularyBook.book.name : "词书详情"}
               >
-                {showWordBookImport ? (
-                  <div className="import-drawer">
-                    <div className="segmented">
-                      <button
-                        className={wordImportMode === "markdown" ? "active" : ""}
-                        onClick={() => setWordImportMode("markdown")}
-                        type="button"
-                      >
-                        Markdown 词书
-                      </button>
-                      <button
-                        className={wordImportMode === "plain" ? "active" : ""}
-                        onClick={() => setWordImportMode("plain")}
-                        type="button"
-                      >
-                        只给单词
-                      </button>
-                    </div>
-                    <input
-                      onChange={(event) => setWordBookName(event.target.value)}
-                      placeholder={vocabularyPreview.title || "先输入词书名称"}
-                      value={wordBookName}
-                    />
-                    {wordImportMode === "markdown" ? (
-                      <>
-                        <textarea
-                          onChange={(event) => {
-                            setWordBookText(event.target.value);
-                            setWordBookMessage("粘贴 Markdown 单词书后，会在下方预览。");
-                          }}
-                          spellCheck={false}
-                          value={wordBookText}
-                        />
-                        <div className="import-footer">
-                          <span>{wordBookMessage}</span>
-                          <span>
-                            识别 {vocabularyPreview.items.length} · 跳过{" "}
-                            {vocabularyPreview.skipped}
-                          </span>
-                        </div>
-                        {vocabularyPreview.items.length > 0 && (
-                          <VocabularyPreview items={vocabularyPreview.items.slice(0, 5)} />
-                        )}
-                        <button
-                          className="primary-button"
-                          disabled={!vocabularyPreview.items.length}
-                          onClick={importVocabularyBook}
-                          type="button"
-                        >
-                          <Import size={17} />
-                          创建并导入
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <textarea
-                          onChange={(event) => setPlainWordText(event.target.value)}
-                          placeholder="每行一个单词，也可以用逗号分隔"
-                          spellCheck={false}
-                          value={plainWordText}
-                        />
-                        <div className="import-footer">
-                          <span>{vocabularyEnrichMessage}</span>
-                          <span>{parsePlainWordList(plainWordText).length} 个词</span>
-                        </div>
-                        <div className="button-row">
-                          <button
-                            className="ghost-button"
-                            onClick={enrichPlainWords}
-                            type="button"
-                          >
-                            <Sparkles size={17} />
-                            LLM 补全预览
-                          </button>
-                          <button
-                            className="primary-button"
-                            disabled={!enrichedVocabulary.length}
-                            onClick={importEnrichedVocabulary}
-                            type="button"
-                          >
-                            <CheckCircle2 size={17} />
-                            确认入库
-                          </button>
-                        </div>
-                        {enrichedVocabulary.length > 0 && (
-                          <VocabularyPreview items={enrichedVocabulary.slice(0, 6)} />
-                        )}
-                      </>
-                    )}
-                  </div>
-                ) : activeVocabularyBook ? (
+                {activeVocabularyBook ? (
                   <div className="book-detail-view">
                     <section className="book-hero">
                       <div>
-                        <span className="soft-badge">单词书</span>
+                        <span className="soft-badge">管理视图</span>
                         <h2>{activeVocabularyBook.book.name}</h2>
                         <p>
                           {activeVocabularyBook.items.length} 个词 · 已复习 {activeBookReviewedCount} · 弱词{" "}
-                          {activeBookWeakCount}
+                          {activeBookWeakCount} · 导入 {formatShortDate(activeVocabularyBook.book.importedAt)}
                         </p>
                       </div>
                       <button
-                        className="primary-button large"
-                        disabled={!dueVocabularyCount}
-                        onClick={openWordStudy}
+                        className="ghost-button large"
+                        onClick={() => openVocabularyImport("plain")}
                         type="button"
                       >
-                        <Play size={18} />
-                        进入专注背词
+                        <Plus size={18} />
+                        继续导入
                       </button>
                     </section>
                     <ProgressBar
@@ -3151,26 +3358,286 @@ function App() {
                         <strong>{activeBookReviewedCount}</strong>
                       </div>
                       <div>
-                        <span>弱项</span>
+                        <span>弱词</span>
                         <strong>{activeBookWeakCount}</strong>
                       </div>
                       <div>
-                        <span>今日队列</span>
-                        <strong>{dueVocabularyCount}</strong>
+                        <span>来源</span>
+                        <strong>{vocabularySourceLabel(activeVocabularyBook.book.source)}</strong>
                       </div>
                     </div>
-                    <VocabularyList items={activeVocabularyBook.items} />
+                    <div className="book-detail-actions">
+                      <button
+                        className="primary-button"
+                        onClick={() => setShowVocabularyItemsModal(true)}
+                        type="button"
+                      >
+                        <ListChecks size={17} />
+                        查看词条
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={openWordStudy}
+                        type="button"
+                        disabled={!dueVocabularyCount}
+                      >
+                        <Play size={17} />
+                        开始背词
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <EmptyState
-                    actionLabel="新建词书"
+                    actionLabel="导入词书"
                     icon={BookOpen}
-                    onAction={() => setShowWordBookImport(true)}
-                    title="选择一本词书，或新建导入"
+                    onAction={() => openVocabularyImport("plain")}
+                    title="选择一本词书查看词条和弱词"
                   />
                 )}
               </Surface>
             </section>
+          </section>
+        )}
+
+        {showVocabularyItemsModal && activeVocabularyBook && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowVocabularyItemsModal(false)}
+            role="presentation"
+          >
+            <section
+              aria-labelledby="vocabulary-items-dialog-title"
+              aria-modal="true"
+              className="modal-card large-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+            >
+              <header className="modal-header">
+                <div>
+                  <span className="soft-badge accent">词条管理</span>
+                  <h2 id="vocabulary-items-dialog-title">
+                    {activeVocabularyBook.book.name}
+                  </h2>
+                  <p>
+                    {activeVocabularyBook.items.length} 个词条 · 已复习 {activeBookReviewedCount} · 弱词{" "}
+                    {activeBookWeakCount}
+                  </p>
+                </div>
+                <button
+                  aria-label="关闭词条列表"
+                  className="icon-button"
+                  onClick={() => setShowVocabularyItemsModal(false)}
+                  type="button"
+                >
+                  <X size={20} />
+                </button>
+              </header>
+              <VocabularyList items={activeVocabularyBook.items} />
+            </section>
+          </div>
+        )}
+
+        {view === "vocabularyImport" && (
+          <section className="vocabulary-import-page">
+            <section className="import-hero">
+              <button
+                className="ghost-button"
+                onClick={() => openView("vocabulary")}
+                type="button"
+              >
+                <ArrowLeft size={17} />
+                返回词书
+              </button>
+              <div>
+                <div className="eyebrow">
+                  <Import size={16} />
+                  独立导入流程
+                </div>
+                <h2>先补全，再预览，最后确认入库。</h2>
+                <p>数据库结构保持不变，额外学习提示会折叠到例句、标签和记忆提示里。</p>
+              </div>
+              <button
+                className="primary-button large"
+                onClick={() => setShowVocabularyImportModal(true)}
+                type="button"
+              >
+                <Import size={18} />
+                打开导入
+              </button>
+            </section>
+
+            <section className="minimal-choice-grid">
+              <button
+                className={`choice-tile ${wordImportMode === "plain" ? "active" : ""}`}
+                onClick={() => {
+                  setWordImportMode("plain");
+                  setShowVocabularyImportModal(true);
+                }}
+                type="button"
+              >
+                <Sparkles size={20} />
+                <strong>只给单词</strong>
+                <span>LLM 自动补全释义、例句、词根和记忆提示。</span>
+              </button>
+              <button
+                className={`choice-tile ${wordImportMode === "markdown" ? "active" : ""}`}
+                onClick={() => {
+                  setWordImportMode("markdown");
+                  setShowVocabularyImportModal(true);
+                }}
+                type="button"
+              >
+                <Import size={20} />
+                <strong>完整 Markdown</strong>
+                <span>你已经整理好全部字段时，直接预览并入库。</span>
+              </button>
+            </section>
+
+            {showVocabularyImportModal && (
+              <div
+                className="modal-backdrop"
+                onClick={() => setShowVocabularyImportModal(false)}
+                role="presentation"
+              >
+                <section
+                  aria-labelledby="word-import-dialog-title"
+                  aria-modal="true"
+                  className="modal-card import-modal"
+                  onClick={(event) => event.stopPropagation()}
+                  role="dialog"
+                >
+                  <header className="modal-header">
+                    <div>
+                      <span className="soft-badge accent">导入词书</span>
+                      <h2 id="word-import-dialog-title">
+                        {wordImportMode === "plain" ? "只给单词，LLM 补全" : "Markdown 完整导入"}
+                      </h2>
+                      <p>先预览，再确认入库；不会修改数据库结构。</p>
+                    </div>
+                    <button
+                      aria-label="关闭导入词书"
+                      className="icon-button"
+                      onClick={() => setShowVocabularyImportModal(false)}
+                      type="button"
+                    >
+                      <X size={20} />
+                    </button>
+                  </header>
+
+                  <div className="segmented wide">
+                    <button
+                      className={wordImportMode === "plain" ? "active" : ""}
+                      onClick={() => setWordImportMode("plain")}
+                      type="button"
+                    >
+                      只给单词，LLM 补全
+                    </button>
+                    <button
+                      className={wordImportMode === "markdown" ? "active" : ""}
+                      onClick={() => setWordImportMode("markdown")}
+                      type="button"
+                    >
+                      Markdown 完整导入
+                    </button>
+                  </div>
+
+                  <div className="import-dialog-grid">
+                    <div className="import-editor-panel">
+                      <input
+                        onChange={(event) => setWordBookName(event.target.value)}
+                        placeholder={vocabularyPreview.title || "词书名称，例如 Daily Work Week 1"}
+                        value={wordBookName}
+                      />
+
+                      {wordImportMode === "plain" ? (
+                        <>
+                          <div className="button-row import-action-row">
+                            <button className="ghost-button" onClick={() => openView("settings")} type="button">
+                              <Menu size={17} />
+                              LLM 设置
+                            </button>
+                            <button className="primary-button" onClick={enrichPlainWords} type="button">
+                              <Sparkles size={17} />
+                              补全预览
+                            </button>
+                            <button
+                              className="ghost-button"
+                              disabled={!enrichedVocabulary.length}
+                              onClick={importEnrichedVocabulary}
+                              type="button"
+                            >
+                              <CheckCircle2 size={17} />
+                              确认入库
+                            </button>
+                          </div>
+                          <textarea
+                            className="plain-word-textarea"
+                            onChange={(event) => setPlainWordText(event.target.value)}
+                            placeholder="commute&#10;receipt&#10;appointment&#10;grocery"
+                            spellCheck={false}
+                            value={plainWordText}
+                          />
+                          <div className="import-footer">
+                            <span>{vocabularyEnrichMessage}</span>
+                            <span>{parsePlainWordList(plainWordText).length} 个词</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <textarea
+                            onChange={(event) => {
+                              setWordBookText(event.target.value);
+                              setWordBookMessage("已更新 Markdown 预览。");
+                            }}
+                            spellCheck={false}
+                            value={wordBookText}
+                          />
+                          <div className="import-footer">
+                            <span>{wordBookMessage}</span>
+                            <span>
+                              识别 {vocabularyPreview.items.length} · 跳过 {vocabularyPreview.skipped}
+                            </span>
+                          </div>
+                          <div className="button-row">
+                            <button
+                              className="primary-button"
+                              disabled={!vocabularyPreview.items.length}
+                              onClick={importVocabularyBook}
+                              type="button"
+                            >
+                              <Import size={17} />
+                              确认导入
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="import-preview-panel minimal-preview">
+                      {wordImportMode === "plain" ? (
+                        enrichedVocabulary.length ? (
+                          <VocabularyPreview items={enrichedVocabulary.slice(0, 10)} />
+                        ) : (
+                          <div className="import-preview-empty">
+                            <Sparkles size={28} />
+                            <strong>等待 LLM 补全</strong>
+                            <span>补全后会先展示释义、例句、词根、近反义和记忆提示。</span>
+                          </div>
+                        )
+                      ) : vocabularyPreview.items.length ? (
+                        <VocabularyPreview items={vocabularyPreview.items.slice(0, 10)} />
+                      ) : (
+                        <div className="import-preview-empty">
+                          <Import size={28} />
+                          <strong>等待 Markdown 内容</strong>
+                          <span>完整词条会在这里预览，确认后再写入本地 SQLite。</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
           </section>
         )}
 
@@ -3200,18 +3667,16 @@ function App() {
                     className="icon-button"
                     onClick={() => setWordCardRevealed((value) => !value)}
                     type="button"
-                    aria-label="切换详情"
+                    aria-label="切换资料区"
                   >
                     <Menu size={22} />
                   </button>
                 </header>
 
-                <main className="word-focus-card">
+                <main className={`word-focus-card ${wordCardRevealed ? "compact" : "full"}`}>
                   <section className="word-focus-hero">
-                    <h2>{currentVocabularyItem.text}</h2>
-                    <div className="word-focus-phonetic">
-                      {currentVocabularyItem.partOfSpeech || "word"}
-                      {currentVocabularyItem.phonetic ? ` · ${currentVocabularyItem.phonetic}` : ""}
+                    <div className="word-focus-wordline">
+                      <h2>{currentVocabularyItem.text}</h2>
                       <button
                         className="icon-button"
                         onClick={() => speakEnglish(currentVocabularyItem.text)}
@@ -3221,66 +3686,80 @@ function App() {
                         <Volume2 size={18} />
                       </button>
                     </div>
+                    <div className="word-focus-phonetic">
+                      <span>{currentVocabularyItem.partOfSpeech || "word"}</span>
+                      {currentVocabularyItem.phonetic && <span>{currentVocabularyItem.phonetic}</span>}
+                    </div>
+                    <div className="focus-mode-line">
+                      <span>
+                        熟悉度 {currentVocabularyItem.familiarity} · 难度{" "}
+                        {currentVocabularyItem.difficulty || "未标注"}
+                      </span>
+                      <span className="soft-badge accent">
+                        {wordCardRevealed ? "精简资料" : "可切换资料"}
+                      </span>
+                    </div>
                   </section>
 
-                  <section className="word-focus-meaning">
-                    <strong>{currentVocabularyItem.primaryMeaning}</strong>
+                  <section className="word-fixed-study">
+                    <div className="fixed-meaning">
+                      <span>核心释义</span>
+                      <strong>{currentVocabularyItem.primaryMeaning}</strong>
+                    </div>
+                    {currentVocabularyItem.example && (
+                      <div className="fixed-example">
+                        <span>例句</span>
+                        <p>{currentVocabularyItem.example}</p>
+                        {currentVocabularyItem.exampleCn && <em>{currentVocabularyItem.exampleCn}</em>}
+                      </div>
+                    )}
                   </section>
 
-                  {wordCardRevealed ? (
-                    <section className="word-focus-scroll">
-                      {currentVocabularyItem.example && (
-                        <div className="focus-section">
-                          <h3>例句</h3>
-                          <p>{currentVocabularyItem.example}</p>
-                          {currentVocabularyItem.exampleCn && <em>{currentVocabularyItem.exampleCn}</em>}
-                        </div>
-                      )}
-                      <WordDetailGrid item={currentVocabularyItem} />
-                    </section>
-                  ) : (
-                    <button
-                      className="focus-reveal-button"
-                      onClick={() => setWordCardRevealed(true)}
-                      type="button"
-                    >
-                      展开例句和助记
-                    </button>
+                  {!wordCardRevealed && (
+                    <WordInfoPanel
+                      activeTab={wordInfoTab}
+                      item={currentVocabularyItem}
+                      onTabChange={setWordInfoTab}
+                    />
                   )}
                 </main>
 
                 <footer className="word-focus-actions">
                   <button
-                    className="rating-button danger"
+                    className="mastery-button danger"
                     onClick={() => reviewVocabularyItem("again")}
                     type="button"
                   >
-                    忘记
-                    <span>稍后再来</span>
+                    <RefreshCw size={18} />
+                    <strong>忘记</strong>
+                    <span>10 分钟</span>
                   </button>
                   <button
-                    className="rating-button warn"
+                    className="mastery-button warn"
                     onClick={() => reviewVocabularyItem("hard")}
                     type="button"
                   >
-                    模糊
-                    <span>需要提醒</span>
+                    <Target size={18} />
+                    <strong>模糊</strong>
+                    <span>明天复习</span>
                   </button>
                   <button
-                    className="rating-button primary"
+                    className="mastery-button primary"
                     onClick={() => reviewVocabularyItem("good")}
                     type="button"
                   >
-                    认识
-                    <span>进入复习</span>
+                    <CheckCircle2 size={18} />
+                    <strong>认识</strong>
+                    <span>3 天后</span>
                   </button>
                   <button
-                    className="rating-button success"
+                    className="mastery-button success"
                     onClick={() => reviewVocabularyItem("easy")}
                     type="button"
                   >
-                    熟悉
-                    <span>延后出现</span>
+                    <Trophy size={18} />
+                    <strong>熟悉</strong>
+                    <span>7 天后</span>
                   </button>
                 </footer>
               </>
@@ -3306,32 +3785,31 @@ function App() {
 
         {view === "scenes" && (
           <section className="scenes-page">
-            <section className="scene-pipeline">
-              <div className="pipeline-step active">
-                <span>1</span>
-                <strong>规划</strong>
-                <em>选词与主题</em>
-              </div>
-              <div className={`pipeline-step ${sceneBatchPlan ? "active" : ""}`}>
-                <span>2</span>
-                <strong>生成</strong>
-                <em>{sceneBatchPlan?.batch.plannedSceneCount ?? 0} 节候选课</em>
-              </div>
-              <div className={`pipeline-step ${activeScene ? "active" : ""}`}>
-                <span>3</span>
-                <strong>阅读</strong>
-                <em>高亮目标词</em>
-              </div>
-              <div className="pipeline-step">
-                <span>4</span>
-                <strong>入课</strong>
-                <em>进入训练</em>
-              </div>
+            <section className="scene-flow-summary" aria-label="场景课流程">
+              {[
+                ["1", "选场景", `${selectedSceneTopics.length} 个场景`],
+                ["2", "生成草稿", `${sceneBatchPlan?.batch.plannedSceneCount ?? 0} 节课`],
+                ["3", "确认草稿", activeScene ? "已选草稿" : "待选择"],
+                ["4", "加入课程", `${generatedScenes.filter((scene) => scene.isAddedToCourse).length} 节已入课`],
+              ].map(([step, label, value], index) => (
+                <div
+                  className={`flow-step-card ${
+                    index === 0 || (index === 1 && sceneBatchPlan) || (index === 2 && activeScene)
+                      ? "active"
+                      : ""
+                  }`}
+                  key={step}
+                >
+                  <span>{step}</span>
+                  <strong>{label}</strong>
+                  <em>{value}</em>
+                </div>
+              ))}
             </section>
 
             <section className="scene-workbench">
               <Surface
-                className="scene-planner"
+                className="scene-planner clean-scene-planner"
                 action={
                   <button
                     className="small-button"
@@ -3345,34 +3823,27 @@ function App() {
                 title="场景课生成"
               >
                 <div className="scene-planner-main">
-                  <div>
+                  <div className="scene-brief">
                     <div className="eyebrow">
                       <Sparkles size={16} />
                       AI 场景课
                     </div>
-                    <h2>把今天的词编成一组能读、能听、能练的课。</h2>
-                    <div className="scene-topic-summary">
-                      {selectedSceneTopics.slice(0, 4).map((topic) => (
-                        <span key={topic}>{topic}</span>
-                      ))}
-                      {selectedSceneTopics.length > 4 && (
-                        <span>+{selectedSceneTopics.length - 4}</span>
-                      )}
-                    </div>
+                    <h2>用今日目标词生成可读、可听、可训练的对话课。</h2>
+                    <p>先确认场景和目标词，再生成草稿；满意后加入课程包进入阅读复习和中译英。</p>
                   </div>
-                  <div className="scene-command-stack">
-                    <button className="ghost-button" onClick={planSceneBatch} type="button">
-                      <ListChecks size={17} />
-                      规划课表
-                    </button>
+                  <div className="scene-action-panel">
                     <button
                       className="primary-button"
-                      disabled={!vocabularyItems.length}
+                      disabled={!selectedSceneTargetWords.length}
                       onClick={generatePlannedSceneBatch}
                       type="button"
                     >
                       <Sparkles size={17} />
                       生成草稿
+                    </button>
+                    <button className="ghost-button" onClick={planSceneBatch} type="button">
+                      <ListChecks size={17} />
+                      只规划
                     </button>
                     <button
                       className="ghost-button"
@@ -3385,35 +3856,68 @@ function App() {
                   </div>
                 </div>
 
-                <div className="scene-planner-strip">
-                  <div>
-                    <span>核心词池</span>
-                    <strong>{sceneBatchPlan?.batch.coreWordCount ?? sceneTargetWords.length}</strong>
+                <section className="scene-config-grid">
+                  <div className="scene-config-card">
+                    <div>
+                      <span className="config-label">场景</span>
+                      <strong>{selectedSceneTopics.slice(0, 3).join("、")}</strong>
+                      {selectedSceneTopics.length > 3 && (
+                        <em>另有 {selectedSceneTopics.length - 3} 个场景</em>
+                      )}
+                    </div>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setShowSceneTopicPicker(true)}
+                      type="button"
+                    >
+                      <Menu size={17} />
+                      选择场景
+                    </button>
                   </div>
-                  <div>
-                    <span>预计课数</span>
-                    <strong>{sceneBatchPlan?.batch.plannedSceneCount ?? 0}</strong>
+                  <div className="scene-config-card">
+                    <div>
+                      <span className="config-label">目标词</span>
+                      <strong>{selectedSceneTargetWords.length} 个词</strong>
+                      <em>默认从今日新词、弱词和到期词里智能选择</em>
+                    </div>
+                    <button
+                      className="ghost-button"
+                      disabled={!sceneTargetWords.length}
+                      onClick={() => setShowSceneWordPicker(true)}
+                      type="button"
+                    >
+                      <Target size={17} />
+                      调整目标词
+                    </button>
+                    <div className="compact-pill-row">
+                      {selectedSceneTargetWords.slice(0, 6).map((word) => (
+                        <span className="target-word-pill" key={word.id}>
+                          {word.text}
+                        </span>
+                      ))}
+                      {selectedSceneTargetWords.length > 6 && (
+                        <span className="target-word-pill">+{selectedSceneTargetWords.length - 6}</span>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <span>草稿</span>
-                    <strong>{generatedScenes.filter((scene) => !scene.isAddedToCourse).length}</strong>
-                  </div>
-                </div>
-
-                <div className="target-word-shelf">
-                  {sceneTargetWords.length ? (
-                    sceneTargetWords.slice(0, 12).map((word) => (
-                      <span className="target-word-pill" key={word.id}>
-                        {word.text}
+                  <div className="scene-config-card">
+                    <span className="config-label">进度</span>
+                    <div className="scene-mini-stats">
+                      <span>
+                        <strong>{sceneBatchPlan?.batch.plannedSceneCount ?? 0}</strong>
+                        计划课
                       </span>
-                    ))
-                  ) : (
-                    <span className="muted">暂无可生成的目标词</span>
-                  )}
-                  {sceneTargetWords.length > 12 && (
-                    <span className="target-word-pill">+{sceneTargetWords.length - 12}</span>
-                  )}
-                </div>
+                      <span>
+                        <strong>{generatedScenes.filter((scene) => !scene.isAddedToCourse).length}</strong>
+                        草稿
+                      </span>
+                      <span>
+                        <strong>{generatedScenes.filter((scene) => scene.isAddedToCourse).length}</strong>
+                        已入课
+                      </span>
+                    </div>
+                  </div>
+                </section>
 
                 {showSceneAdvanced && (
                   <div className="scene-advanced">
@@ -3435,27 +3939,6 @@ function App() {
                         ))}
                       </select>
                     </div>
-                    <div className="topic-chip-grid">
-                      {sceneTopicOptions.map((topic) => (
-                        <button
-                          className={`topic-chip ${
-                            selectedSceneTopics.includes(topic) ? "active" : ""
-                          }`}
-                          aria-pressed={selectedSceneTopics.includes(topic)}
-                          key={topic}
-                          onClick={() =>
-                            setSelectedSceneTopics((current) =>
-                              current.includes(topic)
-                                ? current.filter((item) => item !== topic)
-                                : [...current, topic],
-                            )
-                          }
-                          type="button"
-                        >
-                          {topic}
-                        </button>
-                      ))}
-                    </div>
                     <div className="single-scene-row">
                       <input
                         onChange={(event) => setSceneTitle(event.target.value)}
@@ -3469,7 +3952,7 @@ function App() {
                       />
                       <button
                         className="small-button"
-                        disabled={!sceneTargetWords.length}
+                        disabled={!selectedSceneTargetWords.length}
                         onClick={generateScene}
                         type="button"
                       >
@@ -3498,13 +3981,11 @@ function App() {
                 <div className="scene-card-list">
                   {generatedScenes.length ? (
                     generatedScenes.map((scene) => (
-                      <button
+                      <article
                         className={`scene-card ${
                           activeScene?.scene.id === scene.id ? "active" : ""
                         }`}
                         key={scene.id}
-                        onClick={() => openGeneratedScene(scene.id)}
-                        type="button"
                       >
                         <div>
                           <strong>{scene.title}</strong>
@@ -3515,70 +3996,206 @@ function App() {
                             {formatShortDate(scene.updatedAt)}
                           </span>
                         </div>
-                        <ChevronRight size={16} />
-                      </button>
+                        <div className="scene-card-actions">
+                          <button
+                            className="small-button"
+                            onClick={() => openGeneratedScene(scene.id)}
+                            type="button"
+                          >
+                            摘要
+                          </button>
+                          {scene.isAddedToCourse ? (
+                            <button
+                              className="primary-button"
+                              onClick={() =>
+                                openCourseReading(scene.plannedCoursePackId || activeCourse?.id)
+                              }
+                              type="button"
+                            >
+                              <Volume2 size={16} />
+                              去复习
+                            </button>
+                          ) : (
+                            <button
+                              className="primary-button"
+                              disabled={scene.status !== "succeeded"}
+                              onClick={() => addGeneratedSceneToCourse(scene)}
+                              type="button"
+                            >
+                              <Plus size={16} />
+                              入课
+                            </button>
+                          )}
+                        </div>
+                      </article>
                     ))
                   ) : (
                     <EmptyState icon={Sparkles} title="还没有场景课草稿" />
                   )}
                 </div>
+                {activeScene && (
+                  <div className="draft-summary-card">
+                    <span className="soft-badge accent">
+                      {activeScene.scene.isAddedToCourse ? "已入课程" : "草稿摘要"}
+                    </span>
+                    <strong>{activeScene.scene.title}</strong>
+                    <p>{activeScene.scene.scenario}</p>
+                    <div className="draft-summary-meta">
+                      <span>{activeScene.lines.length} 句</span>
+                      <span>{activeSceneTargets.length} 词</span>
+                      <span>{formatCoverageRate(activeSceneCoverage.coreCoverageRate)} 覆盖</span>
+                    </div>
+                  </div>
+                )}
               </Surface>
             </section>
 
-            <Surface className="scene-reader-surface" title={activeScene ? "沉浸阅读" : "阅读区"}>
-              {activeScene ? (
-                <article className="scene-reader">
-                  <header className="scene-reader-header">
+            {showSceneTopicPicker && (
+              <div
+                className="modal-backdrop"
+                onClick={() => setShowSceneTopicPicker(false)}
+                role="presentation"
+              >
+                <section
+                  aria-labelledby="scene-topic-dialog-title"
+                  aria-modal="true"
+                  className="modal-card scene-topic-modal"
+                  onClick={(event) => event.stopPropagation()}
+                  role="dialog"
+                >
+                  <header className="modal-header">
                     <div>
-                      <span className="soft-badge accent">AI 场景课</span>
-                      <h2>{activeScene.scene.title}</h2>
-                      <p>{activeScene.scene.scenario}</p>
+                      <span className="soft-badge accent">多选场景</span>
+                      <h2 id="scene-topic-dialog-title">选择这次要生成的生活场景</h2>
+                      <p>建议一次选择 3 到 5 个，AI 会把目标词分散到不同对话里。</p>
                     </div>
-                    <div className="scene-reader-meta">
-                      <span>{activeScene.lines.length} 句</span>
-                      <span>{activeSceneTargets.length} 词</span>
-                      <span>{formatCoverageRate(activeSceneCoverage.coreCoverageRate)}</span>
-                      <span>{activeScene.scene.isAddedToCourse ? "已入课程" : "草稿"}</span>
-                    </div>
+                    <button
+                      aria-label="关闭场景选择"
+                      className="icon-button"
+                      onClick={() => setShowSceneTopicPicker(false)}
+                      type="button"
+                    >
+                      <X size={20} />
+                    </button>
                   </header>
-
-                  {activeSceneTargets.length > 0 && (
-                    <section className="reader-word-index">
-                      <div className="reader-section-title">
-                        <ListChecks size={16} />
-                        核心词索引
-                      </div>
-                      <div className="reader-word-grid">
-                        {activeSceneTargets.map((word) => (
-                          <div className="reader-word" key={word.id || word.text}>
-                            <strong>{word.text}</strong>
-                            <span>{word.meaning || word.difficulty || "目标词"}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  <div className="immersive-lines">
-                    {activeScene.lines.map((line, index) => (
-                      <section className="immersive-line" key={line.id}>
-                        <div className="speaker-chip">
-                          {line.speaker || (index % 2 ? "B" : "A")}
-                        </div>
-                        <div className="line-body">
-                          <p className="line-en">
-                            {highlightTargetWords(line.english, activeSceneTargets)}
-                          </p>
-                          <p className="line-cn">{line.chinese}</p>
-                        </div>
-                      </section>
+                  <div className="topic-option-grid">
+                    {sceneTopicOptions.map((topic) => (
+                      <button
+                        aria-pressed={selectedSceneTopics.includes(topic)}
+                        className={`topic-option ${
+                          selectedSceneTopics.includes(topic) ? "active" : ""
+                        }`}
+                        key={topic}
+                        onClick={() =>
+                          setSelectedSceneTopics((current) => {
+                            if (current.includes(topic)) {
+                              return current.length > 1
+                                ? current.filter((item) => item !== topic)
+                                : current;
+                            }
+                            return [...current, topic];
+                          })
+                        }
+                        type="button"
+                      >
+                        <strong>{topic}</strong>
+                        <span>{selectedSceneTopics.includes(topic) ? "已选择" : "点击加入"}</span>
+                      </button>
                     ))}
                   </div>
-                </article>
-              ) : (
-                <EmptyState icon={Sparkles} title="点击一节场景课，进入阅读视图" />
-              )}
-            </Surface>
+                  <footer className="modal-footer">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setSelectedSceneTopics(sceneTopicOptions.slice(0, 5))}
+                      type="button"
+                    >
+                      使用推荐组合
+                    </button>
+                    <button
+                      className="primary-button"
+                      onClick={() => setShowSceneTopicPicker(false)}
+                      type="button"
+                    >
+                      确认场景
+                    </button>
+                  </footer>
+                </section>
+              </div>
+            )}
+
+            {showSceneWordPicker && (
+              <div
+                className="modal-backdrop"
+                onClick={() => setShowSceneWordPicker(false)}
+                role="presentation"
+              >
+                <section
+                  aria-labelledby="scene-word-dialog-title"
+                  aria-modal="true"
+                  className="modal-card scene-topic-modal"
+                  onClick={(event) => event.stopPropagation()}
+                  role="dialog"
+                >
+                  <header className="modal-header">
+                    <div>
+                      <span className="soft-badge accent">目标词</span>
+                      <h2 id="scene-word-dialog-title">选择这次要放进场景课的词</h2>
+                      <p>系统会优先拿新词、弱词和到期词；你也可以手动调整这一批。</p>
+                    </div>
+                    <button
+                      aria-label="关闭目标词选择"
+                      className="icon-button"
+                      onClick={() => setShowSceneWordPicker(false)}
+                      type="button"
+                    >
+                      <X size={20} />
+                    </button>
+                  </header>
+                  <div className="topic-option-grid word-option-grid">
+                    {sceneTargetWords.map((word) => (
+                      <button
+                        aria-pressed={selectedSceneWordIds.includes(word.id)}
+                        className={`topic-option ${
+                          selectedSceneWordIds.includes(word.id) ? "active" : ""
+                        }`}
+                        key={word.id}
+                        onClick={() =>
+                          setSelectedSceneWordIds((current) =>
+                            current.includes(word.id)
+                              ? current.filter((id) => id !== word.id)
+                              : [...current, word.id],
+                          )
+                        }
+                        type="button"
+                      >
+                        <strong>{word.text}</strong>
+                        <span>{word.primaryMeaning || word.difficulty || "目标词"}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <footer className="modal-footer">
+                    <button
+                      className="ghost-button"
+                      onClick={() =>
+                        setSelectedSceneWordIds(
+                          sceneTargetWords.slice(0, Math.min(8, sceneTargetWords.length)).map((word) => word.id),
+                        )
+                      }
+                      type="button"
+                    >
+                      使用智能推荐
+                    </button>
+                    <button
+                      className="primary-button"
+                      onClick={() => setShowSceneWordPicker(false)}
+                      type="button"
+                    >
+                      确认目标词
+                    </button>
+                  </footer>
+                </section>
+              </div>
+            )}
           </section>
         )}
 
@@ -3877,17 +4494,14 @@ function App() {
                 <h2>把句子按课程收好，每次只推进一小节。</h2>
                 <p>{state.coursePacks.length} 个课程包 · {state.sentences.length} 句 · {dueCount} 句待学</p>
               </div>
-              <form className="create-course-form" onSubmit={createCourse}>
-                <input
-                  onChange={(event) => setCourseName(event.target.value)}
-                  placeholder="例如：商务英语 30 天"
-                  value={courseName}
-                />
-                <button className="primary-button" type="submit">
-                  <Plus size={17} />
-                  新建课程
-                </button>
-              </form>
+              <button
+                className="primary-button large"
+                onClick={() => setShowCreateCourseModal(true)}
+                type="button"
+              >
+                <Plus size={18} />
+                新建课程
+              </button>
             </section>
             <div className="course-grid">
               {courseSummaries.length ? (
@@ -3910,6 +4524,50 @@ function App() {
               )}
             </div>
           </section>
+        )}
+
+        {showCreateCourseModal && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowCreateCourseModal(false)}
+            role="presentation"
+          >
+            <section
+              aria-labelledby="create-course-dialog-title"
+              aria-modal="true"
+              className="modal-card small-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+            >
+              <header className="modal-header">
+                <div>
+                  <span className="soft-badge accent">课程包</span>
+                  <h2 id="create-course-dialog-title">新建课程</h2>
+                  <p>课程只负责收纳 Story 和中译英训练材料。</p>
+                </div>
+                <button
+                  aria-label="关闭新建课程"
+                  className="icon-button"
+                  onClick={() => setShowCreateCourseModal(false)}
+                  type="button"
+                >
+                  <X size={20} />
+                </button>
+              </header>
+              <form className="create-course-form modal-form" onSubmit={createCourse}>
+                <input
+                  autoFocus
+                  onChange={(event) => setCourseName(event.target.value)}
+                  placeholder="例如：商务英语 30 天"
+                  value={courseName}
+                />
+                <button className="primary-button" type="submit">
+                  <Plus size={17} />
+                  创建
+                </button>
+              </form>
+            </section>
+          </div>
         )}
 
         {view === "courseDetail" && (
@@ -3941,11 +4599,28 @@ function App() {
                     <div className="course-cover-actions">
                       <button
                         className="ghost-button"
-                        onClick={() => setShowImport((value) => !value)}
+                        onClick={() => setShowImport(true)}
                         type="button"
                       >
                         <Import size={17} />
                         导入句子
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => setShowAddSentenceModal(true)}
+                        type="button"
+                      >
+                        <Plus size={17} />
+                        添加单句
+                      </button>
+                      <button
+                        className="ghost-button"
+                        disabled={!activeSummary.totalSentences}
+                        onClick={() => openCourseReading(activeCourse.id)}
+                        type="button"
+                      >
+                        <Volume2 size={17} />
+                        阅读复习
                       </button>
                       <button
                         className="primary-button"
@@ -3979,97 +4654,30 @@ function App() {
                     />
                   </section>
 
-                  <section className="side-stack">
-                    {showImport && (
-                      <Surface
-                        action={
-                          <button
-                            className="primary-button"
-                            disabled={importPreview.newCount === 0}
-                            onClick={importSentences}
-                            type="button"
-                          >
-                            <Import size={17} />
-                            导入
-                          </button>
-                        }
-                        title="批量导入"
+                  <section className="course-detail-help">
+                    <div>
+                      <span className="soft-badge">管理入口</span>
+                      <strong>导入和添加都已收进弹窗。</strong>
+                      <p>主界面只看课时概览；需要修改素材时再打开管理动作。</p>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="ghost-button"
+                        onClick={() => setShowImport(true)}
+                        type="button"
                       >
-                        <div className="import-format">
-                          <code>## 第一天</code>
-                          <code>English sentence.=中文意思</code>
-                        </div>
-                        <textarea
-                          onChange={(event) => {
-                            setImportText(event.target.value);
-                            setImportMessage(
-                              "粘贴课程文本后，会在下方预览课时和句子。",
-                            );
-                          }}
-                          placeholder={`## 第一天\nYeah, the economy is developing faster than most people expect.=是的，经济发展比大多数人预期的要快。\n\n## 第二天\nHey, did you receive my text yesterday?=嘿，你收到我昨天的短信了吗？`}
-                          spellCheck={false}
-                          value={importText}
-                        />
-                        <div className="import-footer">
-                          <span>{importMessage}</span>
-                          <span>
-                            新增 {importPreview.newCount} · 重复 {importPreview.duplicateCount}
-                          </span>
-                        </div>
-                        {importRows.length > 0 && (
-                          <ImportPreview rows={importRows.slice(0, 8)} />
-                        )}
-                      </Surface>
-                    )}
-
-                    <Surface title="添加单句">
-                      <form className="sentence-form" onSubmit={addSentence}>
-                        <input
-                          onChange={(event) =>
-                            setSentenceDraft({
-                              ...sentenceDraft,
-                              english: event.target.value,
-                            })
-                          }
-                          placeholder="英文句子"
-                          value={sentenceDraft.english}
-                        />
-                        <input
-                          onChange={(event) =>
-                            setSentenceDraft({
-                              ...sentenceDraft,
-                              chinese: event.target.value,
-                            })
-                          }
-                          placeholder="中文意思"
-                          value={sentenceDraft.chinese}
-                        />
-                        <input
-                          onChange={(event) =>
-                            setSentenceDraft({
-                              ...sentenceDraft,
-                              phonetic: event.target.value,
-                            })
-                          }
-                          placeholder="音标，可不填"
-                          value={sentenceDraft.phonetic}
-                        />
-                        <input
-                          onChange={(event) =>
-                            setSentenceDraft({
-                              ...sentenceDraft,
-                              note: event.target.value,
-                            })
-                          }
-                          placeholder="备注"
-                          value={sentenceDraft.note}
-                        />
-                        <button className="primary-button" type="submit">
-                          <Plus size={17} />
-                          添加句子
-                        </button>
-                      </form>
-                    </Surface>
+                        <Import size={17} />
+                        导入句子
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => setShowAddSentenceModal(true)}
+                        type="button"
+                      >
+                        <Plus size={17} />
+                        添加单句
+                      </button>
+                    </div>
                   </section>
                 </div>
 
@@ -4095,22 +4703,39 @@ function App() {
                           <Play size={17} />
                           学习本课
                         </button>
+                        <button
+                          className="ghost-button"
+                          onClick={() => openCourseReading(activeCourse.id, selectedLessonTitle)}
+                          type="button"
+                        >
+                          <Volume2 size={17} />
+                          阅读本课
+                        </button>
                       </div>
                     ) : undefined
                   }
-                  title={selectedLessonTitle ? `「${selectedLessonTitle}」句子` : "全部句子"}
+                  title={selectedLessonTitle ? `「${selectedLessonTitle}」句子` : "课时句子"}
                 >
-                  {selectedLessonTitle && selectedLessonSummary && (
-                    <div className="lesson-detail-strip">
-                      <span>{selectedLessonSummary.total} 句</span>
-                      <span>{selectedLessonSummary.due} 待学</span>
-                      <span>{selectedLessonSummary.mastered} 已掌握</span>
-                    </div>
+                  {selectedLessonTitle && selectedLessonSummary ? (
+                    <>
+                      <div className="lesson-detail-strip">
+                        <span>{selectedLessonSummary.total} 句</span>
+                        <span>{selectedLessonSummary.due} 待学</span>
+                        <span>{selectedLessonSummary.mastered} 已掌握</span>
+                      </div>
+                      <SentenceList
+                        onDelete={deleteSentence}
+                        sentences={selectedLessonSentences}
+                      />
+                    </>
+                  ) : (
+                    <EmptyState
+                      actionLabel="进入沉浸复习"
+                      icon={BookOpen}
+                      onAction={() => openCourseReading(activeCourse.id)}
+                      title="选择一个课时后查看句子；完整阅读请进入沉浸复习"
+                    />
                   )}
-                  <SentenceList
-                    onDelete={deleteSentence}
-                    sentences={selectedLessonSentences}
-                  />
                 </Surface>
               </>
             ) : (
@@ -4119,6 +4744,379 @@ function App() {
                 icon={LibraryBig}
                 onAction={() => openView("courses")}
                 title="先选择一个课程包"
+              />
+            )}
+          </section>
+        )}
+
+        {showImport && activeCourse && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowImport(false)}
+            role="presentation"
+          >
+            <section
+              aria-labelledby="sentence-import-dialog-title"
+              aria-modal="true"
+              className="modal-card import-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+            >
+              <header className="modal-header">
+                <div>
+                  <span className="soft-badge accent">课程导入</span>
+                  <h2 id="sentence-import-dialog-title">批量导入句子</h2>
+                  <p>按课时粘贴 Story；确认后再写入当前课程。</p>
+                </div>
+                <button
+                  aria-label="关闭句子导入"
+                  className="icon-button"
+                  onClick={() => setShowImport(false)}
+                  type="button"
+                >
+                  <X size={20} />
+                </button>
+              </header>
+              <div className="import-dialog-grid">
+                <div className="import-editor-panel">
+                  <div className="import-format">
+                    <code>## 第一天</code>
+                    <code>English sentence.=中文意思</code>
+                  </div>
+                  <textarea
+                    onChange={(event) => {
+                      setImportText(event.target.value);
+                      setImportMessage(
+                        "粘贴课程文本后，会在下方预览课时和句子。",
+                      );
+                    }}
+                    placeholder={`## 第一天\nYeah, the economy is developing faster than most people expect.=是的，经济发展比大多数人预期的要快。\n\n## 第二天\nHey, did you receive my text yesterday?=嘿，你收到我昨天的短信了吗？`}
+                    spellCheck={false}
+                    value={importText}
+                  />
+                  <div className="import-footer">
+                    <span>{importMessage}</span>
+                    <span>
+                      新增 {importPreview.newCount} · 重复 {importPreview.duplicateCount}
+                    </span>
+                  </div>
+                </div>
+                <div className="import-preview-panel minimal-preview">
+                  {importRows.length > 0 ? (
+                    <ImportPreview rows={importRows.slice(0, 10)} />
+                  ) : (
+                    <div className="import-preview-empty">
+                      <Import size={28} />
+                      <strong>等待课程文本</strong>
+                      <span>预览只展示前 10 条，避免页面被原文铺满。</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <footer className="modal-footer">
+                <button
+                  className="ghost-button"
+                  onClick={() => setShowImport(false)}
+                  type="button"
+                >
+                  取消
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={importPreview.newCount === 0}
+                  onClick={importSentences}
+                  type="button"
+                >
+                  <Import size={17} />
+                  确认导入
+                </button>
+              </footer>
+            </section>
+          </div>
+        )}
+
+        {showAddSentenceModal && activeCourse && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowAddSentenceModal(false)}
+            role="presentation"
+          >
+            <section
+              aria-labelledby="add-sentence-dialog-title"
+              aria-modal="true"
+              className="modal-card small-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+            >
+              <header className="modal-header">
+                <div>
+                  <span className="soft-badge accent">手动添加</span>
+                  <h2 id="add-sentence-dialog-title">添加单句</h2>
+                  <p>零散补充时使用；批量内容建议走导入。</p>
+                </div>
+                <button
+                  aria-label="关闭添加单句"
+                  className="icon-button"
+                  onClick={() => setShowAddSentenceModal(false)}
+                  type="button"
+                >
+                  <X size={20} />
+                </button>
+              </header>
+              <form className="sentence-form modal-form" onSubmit={addSentence}>
+                <input
+                  autoFocus
+                  onChange={(event) =>
+                    setSentenceDraft({
+                      ...sentenceDraft,
+                      english: event.target.value,
+                    })
+                  }
+                  placeholder="英文句子"
+                  value={sentenceDraft.english}
+                />
+                <input
+                  onChange={(event) =>
+                    setSentenceDraft({
+                      ...sentenceDraft,
+                      chinese: event.target.value,
+                    })
+                  }
+                  placeholder="中文意思"
+                  value={sentenceDraft.chinese}
+                />
+                <input
+                  onChange={(event) =>
+                    setSentenceDraft({
+                      ...sentenceDraft,
+                      phonetic: event.target.value,
+                    })
+                  }
+                  placeholder="音标，可不填"
+                  value={sentenceDraft.phonetic}
+                />
+                <input
+                  onChange={(event) =>
+                    setSentenceDraft({
+                      ...sentenceDraft,
+                      note: event.target.value,
+                    })
+                  }
+                  placeholder="备注"
+                  value={sentenceDraft.note}
+                />
+                <button className="primary-button" type="submit">
+                  <Plus size={17} />
+                  添加句子
+                </button>
+              </form>
+            </section>
+          </div>
+        )}
+
+        {view === "courseReading" && (
+          <section className="course-reading-page">
+            {activeCourse ? (
+              <>
+                <section className="reading-hero">
+                  <button
+                    className="icon-text-button"
+                    onClick={() => openCourse(activeCourse.id)}
+                    type="button"
+                  >
+                    <ArrowLeft size={17} />
+                    课程详情
+                  </button>
+                  <div>
+                    <div className="eyebrow">
+                      <Volume2 size={16} />
+                      阅读式复习
+                    </div>
+                    <h2>{activeCourse.name}</h2>
+                    <p>
+                      {readingLessonTitle ?? "全部课时"} · {readingSentences.length} 句。
+                      先听读，再进入中译英输出。
+                    </p>
+                  </div>
+                  <div className="reading-hero-actions">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setShowReadingChinese((value) => !value)}
+                      type="button"
+                    >
+                      {showReadingChinese ? "隐藏中文" : "显示中文"}
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!readingSentences.length}
+                      onClick={() =>
+                        openStudy(activeCourse.id, null, readingLessonTitle)
+                      }
+                      type="button"
+                    >
+                      <Play size={17} />
+                      中译英学习
+                    </button>
+                  </div>
+                </section>
+
+                <section className="reading-layout">
+                  <Surface className="reading-index" title="阅读中心">
+                    <div className="reading-index-group">
+                      <span className="config-label">课程</span>
+                      {courseSummaries.map((summary) => (
+                        <button
+                          className={`reading-index-row ${
+                            activeCourse.id === summary.course.id ? "active" : ""
+                          }`}
+                          key={summary.course.id}
+                          onClick={() => openCourseReading(summary.course.id)}
+                          type="button"
+                        >
+                          <strong>{summary.course.name}</strong>
+                          <span>{summary.lessonCount} Story · {summary.totalSentences} 句</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="reading-index-group">
+                      <span className="config-label">课时</span>
+                      <button
+                        className={`reading-index-row ${!readingLessonTitle ? "active" : ""}`}
+                        onClick={() => setReadingLessonTitle(null)}
+                        type="button"
+                      >
+                        <strong>全部 Story</strong>
+                        <span>{activeSentences.length} 句</span>
+                      </button>
+                      {lessonSummaries.map((lesson) => (
+                        <button
+                          className={`reading-index-row ${
+                            readingLessonTitle === lesson.title ? "active" : ""
+                          }`}
+                          key={lesson.title}
+                          onClick={() => setReadingLessonTitle(lesson.title)}
+                          type="button"
+                        >
+                          <strong>{lesson.title}</strong>
+                          <span>
+                            {lesson.total} 句 · {lesson.progressPercent}%
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </Surface>
+
+                  <article className="reading-document immersive-review-document">
+                    {readingSentences.length ? (
+                      <>
+                        {readingReview.vocabularyIndex.length > 0 && (
+                          <section className="review-index-section compact">
+                            <div className="reader-section-title">
+                              <ListChecks size={16} />
+                              关键词匹配
+                            </div>
+                            <div className="reader-word-grid compact">
+                              {readingReview.vocabularyIndex.slice(0, 18).map(({ item, storyIndexes }) => (
+                                <div className="reader-word" key={item.id}>
+                                  <strong>{item.text}</strong>
+                                  <span>
+                                    {item.primaryMeaning || item.difficulty || "目标词"} · Story{" "}
+                                    {storyIndexes.join(",")}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </section>
+                        )}
+
+                        {readingReview.stories.map((story) => (
+                          <section className="review-story scene-reader" key={story.title}>
+                            <header className="scene-reader-header">
+                              <div>
+                                <span className="soft-badge accent">Story {story.index}</span>
+                                <h2>{story.title}</h2>
+                                <p>
+                                  {story.sentences.length} 句 · {story.targetWords.length} 个关键词。
+                                  这是一整个课时，不再拆成零散卡片。
+                                </p>
+                              </div>
+                              <div className="scene-reader-side">
+                                <div className="scene-reader-meta">
+                                  <span>{story.sentences.length} 句</span>
+                                  <span>{story.targetWords.length} 词</span>
+                                  <span>{story.targetWords.some((word) => word.source === "linked") ? "已链接" : "本地匹配"}</span>
+                                </div>
+                              </div>
+                            </header>
+
+                            {story.targetWords.length > 0 && (
+                              <section className="reader-word-index">
+                                <div className="reader-section-title">
+                                  <Target size={16} />
+                                  核心词索引
+                                </div>
+                                <div className="reader-word-grid">
+                                  {story.targetWords.map((word) => (
+                                    <div className="reader-word" key={word.id}>
+                                      <strong>{word.text}</strong>
+                                      <span>
+                                        {word.primaryMeaning || word.difficulty || "目标词"}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+                            )}
+
+                            <div className="immersive-lines">
+                              {story.sentences.map((sentence, index) => {
+                                const sentenceTargets = getSentenceReadingTargets(
+                                  sentence,
+                                  vocabularyItems,
+                                );
+                                return (
+                                  <section className="immersive-line" key={sentence.id}>
+                                    <div className="speaker-chip">{index + 1}</div>
+                                    <button
+                                      aria-label={`播放 Story ${story.index} 第 ${index + 1} 句`}
+                                      className="reading-play-button"
+                                      onClick={() => speakEnglish(sentence.english)}
+                                      type="button"
+                                    >
+                                      <Volume2 size={18} />
+                                    </button>
+                                    <div className="line-body">
+                                      <p className="line-en">
+                                        {highlightVocabularyWords(sentence.english, sentenceTargets)}
+                                      </p>
+                                      {showReadingChinese && (
+                                        <p className="line-cn">{sentence.chinese}</p>
+                                      )}
+                                    </div>
+                                  </section>
+                                );
+                              })}
+                            </div>
+                          </section>
+                        ))}
+                      </>
+                    ) : (
+                      <EmptyState
+                        actionLabel="去 AI 场景"
+                        icon={BookOpen}
+                        onAction={() => openView("scenes")}
+                        title="当前课程还没有句子"
+                      />
+                    )}
+                  </article>
+                </section>
+              </>
+            ) : (
+              <EmptyState
+                actionLabel="去课程包"
+                icon={LibraryBig}
+                onAction={() => openView("courses")}
+                title="先选择一门课程"
               />
             )}
           </section>
@@ -4535,28 +5533,102 @@ function VocabularyPreview({ items }: { items: VocabularyImportPreviewItem[] }) 
   );
 }
 
-function WordDetailGrid({ item }: { item: VocabularyItem }) {
-  const details = [
-    ["词根词缀", item.roots],
-    ["同根词", item.wordFamily],
-    ["近义词", item.synonyms],
-    ["反义词", item.antonyms],
-    ["形象记忆", item.memoryHint],
-    ["场景标签", item.tags],
-  ].filter(([, value]) => value);
-
-  if (!details.length) {
-    return null;
-  }
+function WordInfoPanel({
+  activeTab,
+  item,
+  onTabChange,
+}: {
+  activeTab: WordInfoTab;
+  item: VocabularyItem;
+  onTabChange: (tab: WordInfoTab) => void;
+}) {
+  const tabs: Array<{ id: WordInfoTab; label: string }> = [
+    { id: "example", label: "例句" },
+    { id: "meaning", label: "释义" },
+    { id: "roots", label: "词根" },
+    { id: "relations", label: "近反义" },
+    { id: "memory", label: "助记" },
+  ];
+  const tagTokens = splitVocabularyTokens(item.tags);
+  const synonymTokens = splitVocabularyTokens(item.synonyms);
+  const antonymTokens = splitVocabularyTokens(item.antonyms);
+  const familyTokens = splitVocabularyTokens(item.wordFamily);
 
   return (
-    <div className="word-detail-grid">
-      {details.map(([label, value]) => (
-        <div className="word-detail" key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-        </div>
-      ))}
+    <section className="word-info-panel">
+      <div className="word-info-tabs" role="tablist" aria-label="单词资料">
+        {tabs.map((tab) => (
+          <button
+            aria-selected={activeTab === tab.id}
+            className={activeTab === tab.id ? "active" : ""}
+            key={tab.id}
+            onClick={() => onTabChange(tab.id)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="word-info-content">
+        {activeTab === "example" && (
+          <div className="word-info-reading">
+            <span className="info-kicker">example</span>
+            <p>{item.example || "暂无例句"}</p>
+            {item.exampleCn && <em>{item.exampleCn}</em>}
+          </div>
+        )}
+
+        {activeTab === "meaning" && (
+          <div className="word-info-reading">
+            <span className="info-kicker">translation</span>
+            <p>{item.primaryMeaning}</p>
+            <div className="info-chip-row">
+              <span>{item.partOfSpeech || "word"}</span>
+              {item.difficulty && <span>{item.difficulty}</span>}
+              <span>熟悉度 {item.familiarity}</span>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "roots" && (
+          <div className="word-info-grid compact">
+            <InfoBlock label="词根词缀" value={item.roots || "暂无词根说明"} />
+            <InfoBlock label="同根词" value={familyTokens.length ? familyTokens.join(" · ") : item.wordFamily || "暂无同根词"} />
+          </div>
+        )}
+
+        {activeTab === "relations" && (
+          <div className="word-info-grid compact">
+            <InfoBlock label="近义词" value={synonymTokens.length ? synonymTokens.join(" · ") : item.synonyms || "暂无近义词"} />
+            <InfoBlock label="反义词" value={antonymTokens.length ? antonymTokens.join(" · ") : item.antonyms || "暂无反义词"} />
+          </div>
+        )}
+
+        {activeTab === "memory" && (
+          <div className="word-info-reading">
+            <span className="info-kicker">memory</span>
+            <p>{item.memoryHint || "暂无助记信息"}</p>
+            {!!tagTokens.length && (
+              <div className="info-chip-row">
+                {tagTokens.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function InfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="info-block">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
