@@ -55,6 +55,7 @@ type SentenceStatus = "new" | "learning" | "mastered";
 type Rating = "again" | "hard" | "good" | "easy";
 type AnswerResult = "idle" | "correct" | "wrong";
 type WordInfoTab = "example" | "meaning" | "roots" | "relations" | "memory";
+type ImportTargetMode = "existing" | "new";
 
 interface CoursePack {
   id: string;
@@ -1329,6 +1330,10 @@ function App() {
   const [importMessage, setImportMessage] = useState(
     "粘贴课程文本后，会在下方预览课时和句子。",
   );
+  const [importTargetMode, setImportTargetMode] =
+    useState<ImportTargetMode>("existing");
+  const [importTargetCourseId, setImportTargetCourseId] = useState("");
+  const [importCourseName, setImportCourseName] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [showVocabularyImportModal, setShowVocabularyImportModal] = useState(false);
   const [showVocabularyItemsModal, setShowVocabularyItemsModal] = useState(false);
@@ -1591,6 +1596,24 @@ function App() {
     : 0;
   const streakDays = getStreakDays(state.stats);
   const importRows = useMemo(() => parseImport(importText), [importText]);
+  const importTargetCourse = useMemo(() => {
+    if (importTargetMode !== "existing") return null;
+    return (
+      state.coursePacks.find((course) => course.id === importTargetCourseId) ??
+      activeCourse ??
+      state.coursePacks[0] ??
+      null
+    );
+  }, [activeCourse, importTargetCourseId, importTargetMode, state.coursePacks]);
+  const importTargetSentences = useMemo(
+    () =>
+      importTargetCourse
+        ? state.sentences.filter(
+            (sentence) => sentence.coursePackId === importTargetCourse.id,
+          )
+        : [],
+    [importTargetCourse, state.sentences],
+  );
   const todayTarget = activeCourse?.dailyNewTarget || 20;
   const todayPercent = Math.min(
     100,
@@ -1650,7 +1673,7 @@ function App() {
 
   const importPreview = useMemo(() => {
     const existingKeys = new Set(
-      activeSentences.map((sentence) =>
+      importTargetSentences.map((sentence) =>
         normalizeSentenceKey(sentence.english, sentence.chinese),
       ),
     );
@@ -1673,7 +1696,7 @@ function App() {
       newCount,
       lessonCount: new Set(importRows.map((row) => row.lessonTitle)).size,
     };
-  }, [activeSentences, importRows]);
+  }, [importRows, importTargetSentences]);
 
   const studyQueue = useMemo<StudyQueueItem[]>(
     () =>
@@ -1802,6 +1825,17 @@ function App() {
     setWordImportMode(mode);
     setShowVocabularyImportModal(true);
     setView("vocabularyImport");
+  }
+
+  function openImportDialog(coursePackId?: string, mode: ImportTargetMode = "existing") {
+    const defaultCourseId =
+      coursePackId || activeCourse?.id || state.coursePacks[0]?.id || "";
+    const shouldUseExisting = mode === "existing" && Boolean(defaultCourseId);
+
+    setImportTargetMode(shouldUseExisting ? "existing" : "new");
+    setImportTargetCourseId(defaultCourseId);
+    setImportMessage("先选择导入目标，再粘贴课程文本。");
+    setShowImport(true);
   }
 
   function openCourse(coursePackId: string) {
@@ -1943,7 +1977,6 @@ function App() {
     }));
     setCourseName("");
     setShowCreateCourseModal(false);
-    setShowImport(true);
     setSelectedLessonTitle(null);
     setView("courseDetail");
   }
@@ -2061,12 +2094,45 @@ function App() {
   }
 
   async function importSentences() {
-    if (!activeCourse || !importRows.length) return;
+    if (!importRows.length) return;
+
+    const now = new Date().toISOString();
+    let targetCourse = importTargetCourse;
+
+    if (importTargetMode === "new") {
+      const name = importCourseName.trim();
+      if (!name) {
+        setImportMessage("请先填写新课程包名称。");
+        return;
+      }
+      const hasDuplicate = state.coursePacks.some(
+        (course) => course.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase(),
+      );
+      if (hasDuplicate) {
+        setImportMessage("已经有同名课程包。你可以选择加入已有课程，或换一个新名称。");
+        return;
+      }
+      targetCourse = {
+        id: uid("course"),
+        name,
+        language: "English",
+        dailyNewTarget: 20,
+        createdAt: now,
+      };
+    }
+
+    if (!targetCourse) {
+      setImportMessage("请选择一个已有课程包，或切换为新建课程包。");
+      return;
+    }
+    const resolvedTargetCourse = targetCourse;
 
     const existingKeys = new Set(
-      activeSentences.map((sentence) =>
-        normalizeSentenceKey(sentence.english, sentence.chinese),
-      ),
+      state.sentences
+        .filter((sentence) => sentence.coursePackId === resolvedTargetCourse.id)
+        .map((sentence) =>
+          normalizeSentenceKey(sentence.english, sentence.chinese),
+        ),
     );
     const seenKeys = new Set<string>();
     const rows: ImportRow[] = [];
@@ -2087,12 +2153,12 @@ function App() {
       return;
     }
 
-    const now = new Date().toISOString();
     const lessonMap = new Map<string, string>();
 
     try {
-      await persistCoursePack(activeCourse);
-      const existingLessons = await loadLessons(activeCourse.id);
+      await persistCoursePack(resolvedTargetCourse);
+      const existingLessons =
+        importTargetMode === "new" ? [] : await loadLessons(resolvedTargetCourse.id);
       existingLessons.forEach((lesson) => lessonMap.set(lesson.title, lesson.id));
 
       const lessonTitles = [...new Set(rows.map((row) => row.lessonTitle))];
@@ -2101,7 +2167,7 @@ function App() {
         if (lessonMap.has(title)) continue;
         const lesson: NewLesson = {
           id: uid("lesson"),
-          coursePackId: activeCourse.id,
+          coursePackId: resolvedTargetCourse.id,
           title,
           sortOrder: existingLessons.length + createdLessonCount,
           createdAt: now,
@@ -2113,7 +2179,7 @@ function App() {
 
       const sentences = rows.map<SentenceItem>((row) => ({
         id: uid("sentence"),
-        coursePackId: activeCourse.id,
+        coursePackId: resolvedTargetCourse.id,
         lessonTitle: row.lessonTitle,
         english: row.english,
         chinese: row.chinese,
@@ -2138,13 +2204,23 @@ function App() {
 
       updateState((current) => ({
         ...current,
+        activeCoursePackId: resolvedTargetCourse.id,
+        coursePacks:
+          importTargetMode === "new"
+            ? [resolvedTargetCourse, ...current.coursePacks]
+            : current.coursePacks,
         sentences: [...current.sentences, ...sentences],
       }));
       setImportText("");
+      setImportCourseName("");
+      setImportTargetMode("existing");
+      setImportTargetCourseId(resolvedTargetCourse.id);
       setImportMessage(
         `已导入 ${sentences.length} 句，跳过 ${skipped} 条重复内容，识别 ${lessonTitles.length} 个课时。`,
       );
       setShowImport(false);
+      setSelectedLessonTitle(null);
+      setView("courseDetail");
       setDatabaseError("");
     } catch (error) {
       setDatabaseError(String(error));
@@ -3785,12 +3861,45 @@ function App() {
 
         {view === "scenes" && (
           <section className="scenes-page">
+            <section className="scene-start-hero">
+              <div>
+                <span className="soft-badge accent">AI 场景课</span>
+                <h2>把背过的词，变成一节能读、能听、能训练的真实对话。</h2>
+                <p>
+                  这页只做一件事：从你的单词书里挑一批目标词，让 AI 生成生活场景对话，
+                  然后加入课程包，进入沉浸复习和中译英训练。
+                </p>
+              </div>
+              <div className="scene-start-actions">
+                <button
+                  className="primary-button large"
+                  disabled={!selectedSceneTargetWords.length}
+                  onClick={generatePlannedSceneBatch}
+                  type="button"
+                >
+                  <Sparkles size={18} />
+                  生成对话课
+                </button>
+                <button
+                  className="ghost-button large"
+                  onClick={() => openVocabularyImport("plain")}
+                  type="button"
+                >
+                  <BookOpen size={18} />
+                  导入目标词
+                </button>
+              </div>
+            </section>
             <section className="scene-flow-summary" aria-label="场景课流程">
               {[
-                ["1", "选场景", `${selectedSceneTopics.length} 个场景`],
-                ["2", "生成草稿", `${sceneBatchPlan?.batch.plannedSceneCount ?? 0} 节课`],
-                ["3", "确认草稿", activeScene ? "已选草稿" : "待选择"],
-                ["4", "加入课程", `${generatedScenes.filter((scene) => scene.isAddedToCourse).length} 节已入课`],
+                [
+                  "1",
+                  "准备目标词",
+                  sceneTargetWords.length ? `${selectedSceneTargetWords.length} 个词待生成` : "先导入词书",
+                ],
+                ["2", "选择生活场景", `${selectedSceneTopics.length} 个场景方向`],
+                ["3", "生成并检查", `${generatedScenes.filter((scene) => !scene.isAddedToCourse).length} 个草稿`],
+                ["4", "加入课程复习", `${generatedScenes.filter((scene) => scene.isAddedToCourse).length} 节已入课`],
               ].map(([step, label, value], index) => (
                 <div
                   className={`flow-step-card ${
@@ -3807,6 +3916,23 @@ function App() {
               ))}
             </section>
 
+            {!sceneTargetWords.length && (
+              <section className="scene-empty-guide">
+                <div>
+                  <strong>还没有可用于生成的目标词。</strong>
+                  <span>先导入一批单词，或完成几张单词卡片，AI 才知道该把哪些词放进对话里。</span>
+                </div>
+                <button
+                  className="primary-button"
+                  onClick={() => openVocabularyImport("plain")}
+                  type="button"
+                >
+                  <Import size={17} />
+                  先导入单词
+                </button>
+              </section>
+            )}
+
             <section className="scene-workbench">
               <Surface
                 className="scene-planner clean-scene-planner"
@@ -3817,10 +3943,10 @@ function App() {
                     type="button"
                   >
                     <Menu size={16} />
-                    设置
+                    更多设置
                   </button>
                 }
-                title="场景课生成"
+                title="本次场景课怎么生成"
               >
                 <div className="scene-planner-main">
                   <div className="scene-brief">
@@ -3828,8 +3954,8 @@ function App() {
                       <Sparkles size={16} />
                       AI 场景课
                     </div>
-                    <h2>用今日目标词生成可读、可听、可训练的对话课。</h2>
-                    <p>先确认场景和目标词，再生成草稿；满意后加入课程包进入阅读复习和中译英。</p>
+                    <h2>确认要练的词和要进入的生活场景。</h2>
+                    <p>生成结果会先放进草稿箱。你可以查看摘要，满意后再加入课程包，不会直接覆盖已有课程。</p>
                   </div>
                   <div className="scene-action-panel">
                     <button
@@ -3839,19 +3965,20 @@ function App() {
                       type="button"
                     >
                       <Sparkles size={17} />
-                      生成草稿
+                      生成对话草稿
                     </button>
                     <button className="ghost-button" onClick={planSceneBatch} type="button">
                       <ListChecks size={17} />
-                      只规划
+                      先拆课计划
                     </button>
                     <button
                       className="ghost-button"
+                      disabled={!generatedScenes.some((scene) => scene.status === "succeeded" && !scene.isAddedToCourse)}
                       onClick={addCurrentBatchToCourse}
                       type="button"
                     >
                       <Plus size={17} />
-                      加入课程
+                      草稿加入课程
                     </button>
                   </div>
                 </div>
@@ -3859,7 +3986,7 @@ function App() {
                 <section className="scene-config-grid">
                   <div className="scene-config-card">
                     <div>
-                      <span className="config-label">场景</span>
+                      <span className="config-label">生活场景</span>
                       <strong>{selectedSceneTopics.slice(0, 3).join("、")}</strong>
                       {selectedSceneTopics.length > 3 && (
                         <em>另有 {selectedSceneTopics.length - 3} 个场景</em>
@@ -3876,9 +4003,9 @@ function App() {
                   </div>
                   <div className="scene-config-card">
                     <div>
-                      <span className="config-label">目标词</span>
+                      <span className="config-label">这批目标词</span>
                       <strong>{selectedSceneTargetWords.length} 个词</strong>
-                      <em>默认从今日新词、弱词和到期词里智能选择</em>
+                      <em>{sceneTargetWords.length ? "默认从今日新词、弱词和到期词里智能选择" : "先导入单词书后再生成场景课"}</em>
                     </div>
                     <button
                       className="ghost-button"
@@ -3901,7 +4028,7 @@ function App() {
                     </div>
                   </div>
                   <div className="scene-config-card">
-                    <span className="config-label">进度</span>
+                    <span className="config-label">草稿状态</span>
                     <div className="scene-mini-stats">
                       <span>
                         <strong>{sceneBatchPlan?.batch.plannedSceneCount ?? 0}</strong>
@@ -3931,7 +4058,7 @@ function App() {
                         onChange={(event) => setSceneCoursePackId(event.target.value)}
                         value={sceneCoursePackId}
                       >
-                        <option value="">先生成草稿</option>
+                        <option value="">生成后暂不入课</option>
                         {state.coursePacks.map((course) => (
                           <option key={course.id} value={course.id}>
                             {course.name}
@@ -3977,7 +4104,7 @@ function App() {
                 <p className="status-text">{sceneMessage}</p>
               </Surface>
 
-              <Surface className="scene-drafts" title="草稿箱">
+              <Surface className="scene-drafts" title="生成结果和下一步">
                 <div className="scene-card-list">
                   {generatedScenes.length ? (
                     generatedScenes.map((scene) => (
@@ -4002,7 +4129,7 @@ function App() {
                             onClick={() => openGeneratedScene(scene.id)}
                             type="button"
                           >
-                            摘要
+                            查看
                           </button>
                           {scene.isAddedToCourse ? (
                             <button
@@ -4023,14 +4150,14 @@ function App() {
                               type="button"
                             >
                               <Plus size={16} />
-                              入课
+                              加入课程
                             </button>
                           )}
                         </div>
                       </article>
                     ))
                   ) : (
-                    <EmptyState icon={Sparkles} title="还没有场景课草稿" />
+                    <EmptyState icon={Sparkles} title="还没有草稿：先点「生成对话草稿」" />
                   )}
                 </div>
                 {activeScene && (
@@ -4494,14 +4621,24 @@ function App() {
                 <h2>把句子按课程收好，每次只推进一小节。</h2>
                 <p>{state.coursePacks.length} 个课程包 · {state.sentences.length} 句 · {dueCount} 句待学</p>
               </div>
-              <button
-                className="primary-button large"
-                onClick={() => setShowCreateCourseModal(true)}
-                type="button"
-              >
-                <Plus size={18} />
-                新建课程
-              </button>
+              <div className="course-library-actions">
+                <button
+                  className="primary-button large"
+                  onClick={() => openImportDialog(undefined, state.coursePacks.length ? "existing" : "new")}
+                  type="button"
+                >
+                  <Import size={18} />
+                  导入课程
+                </button>
+                <button
+                  className="ghost-button large"
+                  onClick={() => setShowCreateCourseModal(true)}
+                  type="button"
+                >
+                  <Plus size={18} />
+                  只建空课程
+                </button>
+              </div>
             </section>
             <div className="course-grid">
               {courseSummaries.length ? (
@@ -4599,7 +4736,7 @@ function App() {
                     <div className="course-cover-actions">
                       <button
                         className="ghost-button"
-                        onClick={() => setShowImport(true)}
+                        onClick={() => openImportDialog(activeCourse.id)}
                         type="button"
                       >
                         <Import size={17} />
@@ -4663,7 +4800,7 @@ function App() {
                     <div className="button-row">
                       <button
                         className="ghost-button"
-                        onClick={() => setShowImport(true)}
+                        onClick={() => openImportDialog(activeCourse.id)}
                         type="button"
                       >
                         <Import size={17} />
@@ -4749,7 +4886,7 @@ function App() {
           </section>
         )}
 
-        {showImport && activeCourse && (
+        {showImport && (
           <div
             className="modal-backdrop"
             onClick={() => setShowImport(false)}
@@ -4764,9 +4901,9 @@ function App() {
             >
               <header className="modal-header">
                 <div>
-                  <span className="soft-badge accent">课程导入</span>
-                  <h2 id="sentence-import-dialog-title">批量导入句子</h2>
-                  <p>按课时粘贴 Story；确认后再写入当前课程。</p>
+                  <span className="soft-badge accent">导入课程</span>
+                  <h2 id="sentence-import-dialog-title">把句子导入课程包</h2>
+                  <p>先选择保存位置，再粘贴课时文本；确认后才会写入数据库。</p>
                 </div>
                 <button
                   aria-label="关闭句子导入"
@@ -4778,7 +4915,90 @@ function App() {
                 </button>
               </header>
               <div className="import-dialog-grid">
+                <div className="import-target-panel">
+                  <div className="import-step-title">
+                    <span>1</span>
+                    <div>
+                      <strong>选择导入到哪里</strong>
+                      <em>新资料建新课程；补充资料加入已有课程。</em>
+                    </div>
+                  </div>
+                  <div className="target-choice-grid">
+                    <button
+                      className={`target-choice ${importTargetMode === "existing" ? "active" : ""}`}
+                      disabled={!state.coursePacks.length}
+                      onClick={() => {
+                        const fallbackId =
+                          importTargetCourseId || activeCourse?.id || state.coursePacks[0]?.id || "";
+                        setImportTargetMode("existing");
+                        setImportTargetCourseId(fallbackId);
+                        setImportMessage("将把识别到的课时追加到已有课程包。");
+                      }}
+                      type="button"
+                    >
+                      <strong>加入已有课程包</strong>
+                      <span>给已有课程追加新课时和句子。</span>
+                    </button>
+                    <button
+                      className={`target-choice ${importTargetMode === "new" ? "active" : ""}`}
+                      onClick={() => {
+                        setImportTargetMode("new");
+                        setImportMessage("将创建新课程包，再把课时写进去。");
+                      }}
+                      type="button"
+                    >
+                      <strong>新建课程包</strong>
+                      <span>适合导入一套新的资料。</span>
+                    </button>
+                  </div>
+
+                  {importTargetMode === "existing" ? (
+                    <label className="stacked-field">
+                      课程包
+                      <select
+                        onChange={(event) => setImportTargetCourseId(event.target.value)}
+                        value={importTargetCourse?.id ?? ""}
+                      >
+                        {state.coursePacks.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="stacked-field">
+                      新课程包名称
+                      <input
+                        onChange={(event) => setImportCourseName(event.target.value)}
+                        placeholder="例如：CET4 晚间场景课"
+                        value={importCourseName}
+                      />
+                    </label>
+                  )}
+
+                  <div className="import-target-summary">
+                    <strong>
+                      {importTargetMode === "new"
+                        ? importCourseName.trim() || "等待填写新课程名"
+                        : importTargetCourse?.name || "请选择课程包"}
+                    </strong>
+                    <span>
+                      {importTargetMode === "new"
+                        ? "会创建为一个全新的课程包"
+                        : `${importTargetSentences.length} 句已有内容会参与重复检查`}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="import-editor-panel">
+                  <div className="import-step-title">
+                    <span>2</span>
+                    <div>
+                      <strong>粘贴课时文本</strong>
+                      <em>用标题分课时，句子用英文=中文。</em>
+                    </div>
+                  </div>
                   <div className="import-format">
                     <code>## 第一天</code>
                     <code>English sentence.=中文意思</code>
@@ -4802,6 +5022,15 @@ function App() {
                   </div>
                 </div>
                 <div className="import-preview-panel minimal-preview">
+                  <div className="import-step-title">
+                    <span>3</span>
+                    <div>
+                      <strong>确认预览</strong>
+                      <em>
+                        {importPreview.lessonCount} 个课时 · 新增 {importPreview.newCount} · 重复 {importPreview.duplicateCount}
+                      </em>
+                    </div>
+                  </div>
                   {importRows.length > 0 ? (
                     <ImportPreview rows={importRows.slice(0, 10)} />
                   ) : (
@@ -4823,7 +5052,12 @@ function App() {
                 </button>
                 <button
                   className="primary-button"
-                  disabled={importPreview.newCount === 0}
+                  disabled={
+                    importPreview.newCount === 0 ||
+                    (importTargetMode === "new"
+                      ? !importCourseName.trim()
+                      : !importTargetCourse)
+                  }
                   onClick={importSentences}
                   type="button"
                 >
